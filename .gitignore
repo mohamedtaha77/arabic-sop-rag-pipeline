@@ -1,0 +1,28 @@
+# Source documents and everything derived from them.
+# The corpus is classified for internal use and must not be committed.
+data/raw/
+data/processed/
+data/ocr_cache/
+
+# Private working notes, not part of the published project.
+LEARNING/
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Environment and secrets
+.env
+.env.*
+
+# Editors and OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db

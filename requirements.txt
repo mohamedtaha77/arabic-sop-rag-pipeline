@@ -1,0 +1,15 @@
+# Text layer extraction
+pypdf==5.1.0
+
+# Page rendering for OCR. Also usable as a second text extractor, which is how
+# the corpus corruption was confirmed to be in the files rather than the reader.
+pymupdf==1.28.2
+
+# Local Arabic and English OCR. Runs on this machine: the corpus is classified
+# for internal use, so cloud OCR is not an option.
+easyocr==1.7.2
+
+# torch arrives as an easyocr dependency. On an NVIDIA GPU, install the CUDA
+# build instead for roughly an 8x speedup:
+#   pip install --force-reinstall torch torchvision \
+#       --index-url https://download.pytorch.org/whl/cu126
