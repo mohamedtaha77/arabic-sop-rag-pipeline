@@ -15,7 +15,7 @@ Run textlayer first: it is cheap and its quality assessment determines whether
 OCR is needed at all.
 """
 
-from .cleaning import clean_text
+from .cleaning import clean_text, correct_ocr_misreads
 from .document import Document
 from .metadata import apply_version_fields, extract_version_fields
 from .quality import assess_quality
@@ -24,6 +24,7 @@ from .storage import load_documents, save_documents
 __all__ = [
     "Document",
     "clean_text",
+    "correct_ocr_misreads",
     "assess_quality",
     "extract_version_fields",
     "apply_version_fields",

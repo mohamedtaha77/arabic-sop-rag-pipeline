@@ -89,3 +89,36 @@ def clean_text(raw: str) -> str:
     text = BLANK_LINE_RUN.sub("\n\n", text)
 
     return text.strip()
+
+
+# --- known OCR misreads ------------------------------------------------
+
+# Confirmed by direct measurement, not assumed, and kept separate from
+# clean_text above: these are visual misreadings EasyOCR makes, a different
+# defect class from the text-layer route's ToUnicode corruption described in
+# ingestion.md. Neither form appears anywhere in the text-layer route's own
+# output, so this correction is scoped to OCR-produced text only.
+#
+# Deliberately a short, explicit list rather than fuzzy matching. Sweeping
+# the corpus for edit-distance-1 variants of the structural anchor words
+# found 14 "near-miss" forms for الإجراءات alone; all but one were legitimate
+# Arabic, a conjunction prefix (والإجراءات), a dropped hamza seat
+# (الاجراءات), not corruption. A fuzzy matcher would have "corrected" those
+# into the wrong word. An explicit list corrects only what was actually
+# confirmed wrong.
+KNOWN_OCR_MISREADS = {
+    "الإجداءات": "الإجراءات",   # ر misread as د; Assets and warehouse, p8
+    "امنفذ": "المنفذ",           # ل dropped; Assets and warehouse, p10
+}
+
+
+def correct_ocr_misreads(text: str) -> str:
+    """Fix known, individually confirmed OCR misreadings.
+
+    Call after clean_text, on OCR-produced text only (ocr.py, layout.py).
+    The text-layer route has its own, unrelated corruption and is handled by
+    OCR replacing it entirely rather than by any correction here.
+    """
+    for bad, good in KNOWN_OCR_MISREADS.items():
+        text = text.replace(bad, good)
+    return text

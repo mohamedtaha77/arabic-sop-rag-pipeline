@@ -29,7 +29,7 @@ from ..config import (
     RENDER_DPI,
     TEXTLAYER_OUTPUT,
 )
-from .cleaning import clean_text
+from .cleaning import clean_text, correct_ocr_misreads
 from .document import Document
 from .metadata import apply_version_fields, extract_version_fields
 from .quality import assess_quality
@@ -133,7 +133,7 @@ def ocr_pdf(pdf_path: Path, dpi: int = RENDER_DPI,
                           f"{time.time() - started:>5.1f}s "
                           f"{len(raw_text):>5} chars")
 
-            text = clean_text(raw_text)
+            text = correct_ocr_misreads(clean_text(raw_text))
             if not text:
                 if verbose:
                     print(f"    page {page_number}: OCR returned nothing")

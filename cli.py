@@ -2,6 +2,7 @@
 
     python cli.py textlayer     extract via the embedded text layer
     python cli.py ocr           extract via rendering and OCR
+    python cli.py layout        extract tables and prose via OCR plus geometry
     python cli.py compare       score the two routes against each other
 """
 
@@ -28,6 +29,14 @@ def main(argv: list[str] | None = None) -> int:
         help=f"render resolution, default {RENDER_DPI}",
     )
 
+    layout_parser = sub.add_parser(
+        "layout", help="extract tables and prose via OCR plus geometry"
+    )
+    layout_parser.add_argument(
+        "--dpi", type=int, default=RENDER_DPI,
+        help=f"render resolution, default {RENDER_DPI}",
+    )
+
     sub.add_parser("compare", help="score both routes against ground truth")
 
     args = parser.parse_args(argv)
@@ -39,6 +48,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "ocr":
         from pipeline.ingestion import ocr
         return 0 if ocr.run(dpi=args.dpi) else 1
+
+    if args.command == "layout":
+        from pipeline.ingestion import layout
+        return 0 if layout.run(dpi=args.dpi) else 1
 
     from pipeline.ingestion import compare
     compare.run()
