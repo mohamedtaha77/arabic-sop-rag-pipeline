@@ -11,12 +11,12 @@ their accuracy.
 
 ## Status
 
-Ingestion is complete. Later stages are in progress.
+Ingestion and chunking are complete. Later stages are in progress.
 
 | Stage | Status | Output |
 |---|---|---|
 | Ingestion | done | `Document` objects with provenance and quality metadata |
-| Chunking | not started | retrievable units preserving table row structure |
+| Chunking | done | 357 chunks with section paths, actors and row provenance |
 | Embedding | not started | vectors from a multilingual model |
 | Vector store | not started | searchable index |
 | Retrieval | not started | hybrid BM25 and vector, with rank fusion |
@@ -74,29 +74,108 @@ other.
 Each page carries a version control header. pypdf reads in layout order, so each
 value stays next to its label. EasyOCR groups the three labels onto one line and
 places the values elsewhere, which destroys the binding. The version parser
-matches on 28 of 29 and 19 of 20 text layer pages, and on zero OCR pages, so the
-OCR route borrows its version metadata from the text layer route.
+matches on 28 of 29, 19 of 20 and 28 of 29 text layer pages, and on zero OCR
+pages, so the OCR route borrows its version metadata from the text layer route.
+
+One manual's header labels are themselves corrupted, truncated mid-word, which
+left all three of its fields empty for a while. The digits beside them were
+correct throughout — digits are the one thing a broken glyph table does not
+damage — so the version is recovered by anchoring on the surviving part of the
+label. Its two dates truncate to the same prefix and cannot be told apart that
+way, so those come from the header table's geometry instead.
 
 The text layer route also runs 200 times faster and produces the quality
 assessment that determines whether OCR is needed at all. On an undamaged PDF it
 is the correct and only route required.
 
+### A third route for table structure
+
+Neither route above recovers columns. Several pages are grids binding an
+executing unit to numbered action steps, and OCR flattens each row into a single
+line, so column meaning is lost. That is a layout problem rather than a character
+problem, and no OCR setting addresses it.
+
+`layout.py` reads each page a third way, at `detail=1`, keeping the bounding box
+per recognised fragment that the flat route discards. PyMuPDF's `find_tables`
+supplies the cell geometry, and each fragment is assigned to the cell its centre
+falls inside. Neither tool is sufficient alone: PyMuPDF knows where the cells
+are, and its own cell text is both ToUnicode-corrupted and in visual rather than
+reading order, so the characters have to come from OCR.
+
+Three findings from measuring the corpus rather than assuming a table's shape:
+
+- A detected table of two columns spanning most of the page height is not data.
+  It is the numbered-list frame Word draws around a block of steps, usually with
+  a real table nested inside it.
+- Content tables are not uniform grids. PyMuPDF stores a merged cell once and
+  marks every position it spans as empty, so rows are emitted as variable-length
+  lists rather than padded to a fixed column count.
+- Tables spanning a page break are common, 12 of them here, three running three
+  pages deep. Each records where its continuation pages begin, since a heading
+  announced on a later page belongs to the rows below that break.
+
 ### Known limitations
 
-OCR does not recover table structure. Several pages are grids binding an
-executing unit to numbered action steps, and OCR flattens each row into a single
-line, so column meaning is lost. This is a layout problem rather than a character
-problem, and no OCR setting addresses it. The bounding boxes discarded by
-`detail=0` in `ocr_image` are where a fix would begin. Chunking has to solve it.
-
-OCR also introduces its own errors, including one Arabic conjunction misread as a
+OCR introduces its own errors, including one Arabic conjunction misread as a
 digit. These are fewer and less systematic than the font corruption they replace,
-but they are not zero.
+but they are not zero. Thirty individually confirmed misreadings are corrected by
+an explicit list; a corpus sweep found 610 near-miss candidates, most of them
+ordinary Arabic carrying a prefix, which is why the list stays hand-confirmed
+rather than fuzzy-matched.
+
+Words merged across a lost space, such as two nouns printed without the space
+between them, are measured but not corrected. They are invisible to vector
+retrieval and will cost lexical recall in the hybrid stage.
 
 Arabic text extracted in visual rather than logical order is a common PDF failure
 and worth ruling out on any new corpus. It does not occur here. Reversed spellings
 of common words appear zero times in either route's output, so no bidirectional
 reshaping pass is required.
+
+## Chunking
+
+After the tables are lifted out, the corpus is 110,793 characters of table cells
+against 20,524 of prose. It is nine tenths table, so row shape decides how a
+chunk is formed rather than any uniform size rule.
+
+| Row shape | Count | Treatment |
+|---|---|---|
+| numbered step | 535 | grouped under the actor who performs it |
+| actor label | 310 | becomes chunk metadata, not chunk content |
+| continuation | 75 | joins the block it follows |
+| data grid row | 52 | header re-attached, one chunk per row above six rows |
+| account line | 37 | grouped per journal entry |
+| heading | 23 | folds into the section path |
+| ordinal sub-heading | 14 | folds into the section path |
+
+A procedure block ends where the executor changes, the executing unit changes,
+or a heading opens a new procedure. All three are boundaries the document itself
+draws. A step number and a description mean little without knowing which unit
+performs them, which is the failure nobody notices until an auditor asks.
+
+Section paths need two heading sources. Two manuals put a procedure title in a
+one-cell table row; the third prints it in prose on the page above and its tables
+carry no title at all. Reading either source alone leaves most of one manual's
+procedures unlabelled. A one-cell row is not reliably a heading either: of 107 in
+the corpus, 37 are, and the rest are cover titles, approver names, account lines
+and step text that lost its number cell.
+
+Three gates run on every pass and print with the report:
+
+- no chunk splits a table row
+- every chunk has a section path
+- every procedure block binds an executing actor
+
+Verified against the source PDFs in both directions: of 22,936 token uses, none
+appears in a chunk without appearing in the source, and three do not reach a
+chunk, all from a single canonicalised heading. Everything else excluded is the
+cover, the contents page, the version header band or the footer band, each
+identified by its position on the page.
+
+Chunk ids are scoped to a page and a type, `assets_wearhouse_p10_procedure_block_02`,
+rather than sequential across the corpus. Under a corpus-wide sequence, inserting
+one chunk renumbers everything after it and silently invalidates the gold ids the
+evaluation set names by hand.
 
 ## Setup
 
@@ -124,10 +203,17 @@ Place PDFs in `data/raw/`, then:
 python cli.py textlayer    # fast extraction, assesses whether OCR is needed
 python cli.py ocr          # rendering and OCR, cached per page
 python cli.py compare      # score both routes against ground truth
+python cli.py layout       # tables and prose from OCR plus page geometry
+python cli.py chunk        # split the layout output into retrievable chunks
 ```
 
-Run `textlayer` first. It is cheap, and it populates the version metadata the OCR
-route reuses.
+Run `textlayer` first. It is cheap, and it populates the version metadata the
+other two routes reuse. `layout` needs its output on disk; without it the version
+fields fall back to what page geometry alone can recover.
+
+Open the JSON outputs in an editor rather than a terminal. Windows consoles
+render right-to-left text badly, and Arabic that looks reversed in a console is a
+display problem rather than a data problem.
 
 OCR results are cached under `data/ocr_cache/`, keyed by the source file's
 content hash and the render resolution. Replacing a PDF with a corrected export
@@ -149,7 +235,15 @@ pipeline/
     storage.py                  JSON serialisation
     textlayer.py                pypdf extraction route
     ocr.py                      rendering and OCR route
+    layout.py                   tables and prose from OCR plus page geometry
     compare.py                  scores the two routes against ground truth
+  chunking/
+    chunk.py                    the Chunk contract, stable ids, storage
+    rows.py                     what one table row is
+    sections.py                 section paths, from two heading sources
+    tables.py                   a table's five kinds and their chunks
+    prose.py                    running text, split on numbered rules
+    chunker.py                  orchestration and the three gates
 data/
   raw/                          source PDFs, not tracked
   processed/                    stage outputs, not tracked
@@ -188,9 +282,10 @@ and form codes are lexical matching problems that embeddings blur and BM25
 handles precisely. Vector-only retrieval performs acceptably in casual testing
 and fails on exactly the questions this corpus exists to answer.
 
-Chunks need a section path. Each manual restarts its own numbering, so a chunk
-reading "step 9" is ambiguous across documents unless the section path travels
-with it.
+Chunk size is currently measured in characters, standing in for tokens at
+roughly three to four characters per Arabic token. The embedding model's own
+tokenizer should settle it, and the largest chunk at 2,903 characters needs
+checking against a real token count before anything is indexed.
 
 The manuals cross-reference governing policies that are not part of the corpus,
 including a procurement policy and a delegation of authority document. Queries
