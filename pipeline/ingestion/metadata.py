@@ -8,8 +8,13 @@ These fields are parsed from the text layer route, not from OCR. The header is
 a three row table, and pypdf reads in layout order so each value stays adjacent
 to its label. EasyOCR groups the three labels onto one line and places the
 values elsewhere on the page, which destroys the binding. Measured on the
-reference corpus: the patterns below match on 28 of 29 and 19 of 20 text layer
-pages, and on zero OCR pages.
+reference corpus: the patterns below match the version on 28 of 29, 19 of 20
+and 28 of 29 text layer pages, and on zero OCR pages.
+
+The two date patterns still find nothing in the third manual, whose labels are
+too damaged to anchor on without guessing which date is which. layout.py reads
+those two from the header table's geometry instead, and the two routes agree on
+every field they both recover.
 """
 
 from __future__ import annotations
@@ -19,8 +24,27 @@ from collections import Counter
 
 from .document import Document
 
+# The version label is matched on its opening رقم ال rather than in full.
+# Central Mail's text layer truncates it to رقم الن, which is why this file
+# originally reported all three of its fields as None: the digit was sitting
+# right there, correctly extracted, with nothing the pattern recognised beside
+# it. Digits are the one thing the broken ToUnicode table does not corrupt, so
+# the value was never in doubt, only the anchor.
+#
+# Measured against the full corpus: the shortened anchor matches on exactly the
+# same 28 and 19 pages as the full label did for the other two manuals and
+# returns the same value, adds 28 of Central Mail's 29, and never matches more
+# than once on any page in the corpus, so it has not become loose enough to
+# catch a different رقم.
+#
+# The two dates keep their full labels deliberately. Central Mail truncates
+# both تاريخ الإصدار and تاريخ آخر مراجعة to the same تار, so a shortened
+# anchor could not tell issue from review; it would only appear to work here
+# because both happen to read 02/2026. layout.py already recovers those two by
+# their position in the header table, which is a real distinction rather than a
+# coincidence, so this route leaves them alone.
 VERSION_FIELD_PATTERNS = {
-    "doc_version": re.compile(r"(\d{1,2})\s*رقم النسخة"),
+    "doc_version": re.compile(r"(\d{1,2})\s*رقم\s+ال"),
     "issue_date": re.compile(r"(\d{2}/\d{4})\s*تاريخ الإصدار"),
     "review_date": re.compile(r"(\d{2}/\d{4})\s*تاريخ آخر مراجعة"),
 }

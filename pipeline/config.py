@@ -15,6 +15,8 @@ TEXTLAYER_OUTPUT = PROCESSED_DIR / "01_documents_textlayer.json"
 OCR_OUTPUT = PROCESSED_DIR / "01_documents_ocr.json"
 LAYOUT_OUTPUT = PROCESSED_DIR / "01_documents_layout.json"
 
+CHUNKS_OUTPUT = PROCESSED_DIR / "02_chunks.json"
+
 # Page render resolution for OCR. 72 DPI (the PDF default) loses the dots that
 # distinguish ب ت ث ن; 600 DPI quadruples runtime for no measured accuracy gain.
 RENDER_DPI = 300

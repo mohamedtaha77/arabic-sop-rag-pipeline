@@ -15,7 +15,7 @@ assuming the shape of a "table" in advance, recorded here because each one
 would produce a working-looking but wrong result if skipped:
 
 * PyMuPDF's own ``Table.extract()`` returns text that is both ToUnicode-
-  corrupted, the same font-mapping damage described in ingestion.md, and in
+  corrupted, the same font-mapping damage the text-layer route suffers, and in
   visual (mirror) order rather than logical reading order. Its geometry is
   trustworthy; its text is not. Cell text has to come from OCR.
 * A detected "table" of two columns spanning most of the page height is not
@@ -41,7 +41,7 @@ from __future__ import annotations
 import json
 import time
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import pymupdf
@@ -359,6 +359,16 @@ class TableBlock:
     ``rows`` are already in logical reading order. ``page`` and ``end_page``
     are equal for an ordinary table and differ only when the page-spanning
     merge below folded a continuation table into this one.
+
+    ``row_page_breaks`` records where each continuation page's rows begin, as
+    ``(row_index, page_number)`` pairs, and is empty for a table that never
+    spanned. Without it a merged table is a flat list of rows that has
+    forgotten which page each came from, and ``page`` and ``end_page`` alone
+    cannot recover it: a three-page span says only that the rows lie somewhere
+    between the two. Chunking needs the boundary because a manual can announce
+    a new procedure in the prose of a continuation page, and that heading
+    belongs to the rows below the break rather than to the whole table.
+    Measured: 2 of the corpus's 12 merged tables do exactly this.
     """
 
     rows: list[list[str]]
@@ -366,6 +376,7 @@ class TableBlock:
     col_count: int
     page: int
     end_page: int
+    row_page_breaks: list[tuple[int, int]] = field(default_factory=list)
 
 
 def _claim_footer(fragments: list[Fragment], claimed: list[bool],
@@ -493,6 +504,9 @@ def merge_page_spans(layouts: list[PageLayout], page_height: float,
             if (continuation_rows and target.rows
                     and continuation_rows[0] == target.rows[0]):
                 continuation_rows = continuation_rows[1:]
+            # Recorded before the extend, while len(target.rows) still names
+            # the index the continuation's first row is about to occupy.
+            target.row_page_breaks.append((len(target.rows), continuation.page))
             target.rows.extend(continuation_rows)
             target.bbox = (target.bbox[0], target.bbox[1],
                             target.bbox[2], continuation.bbox[3])
@@ -610,7 +624,8 @@ def run(directory: Path = RAW_DIR, output: Path = LAYOUT_OUTPUT,
                 "restricted": lp.restricted,
                 "tables": [
                     {"rows": t.rows, "bbox": t.bbox, "col_count": t.col_count,
-                     "page": t.page, "end_page": t.end_page}
+                     "page": t.page, "end_page": t.end_page,
+                     "row_page_breaks": t.row_page_breaks}
                     for t in lp.tables
                 ],
             }

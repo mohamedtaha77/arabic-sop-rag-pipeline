@@ -95,9 +95,9 @@ def clean_text(raw: str) -> str:
 
 # Confirmed by direct measurement, not assumed, and kept separate from
 # clean_text above: these are visual misreadings EasyOCR makes, a different
-# defect class from the text-layer route's ToUnicode corruption described in
-# ingestion.md. Neither form appears anywhere in the text-layer route's own
-# output, so this correction is scoped to OCR-produced text only.
+# defect class from the text-layer route's ToUnicode corruption. None of these
+# forms appears anywhere in the text-layer route's own output, so the
+# correction is scoped to OCR-produced text only.
 #
 # Deliberately a short, explicit list rather than fuzzy matching. Sweeping
 # the corpus for edit-distance-1 variants of the structural anchor words
@@ -106,10 +106,104 @@ def clean_text(raw: str) -> str:
 # (الاجراءات), not corruption. A fuzzy matcher would have "corrected" those
 # into the wrong word. An explicit list corrects only what was actually
 # confirmed wrong.
+#
+# A wider sweep, run when chunking exposed these forms inside section paths,
+# put a number on that. Every corpus token used at most twice that sits one
+# edit from a token used five times or more: 610 candidates, and the large
+# majority are ordinary Arabic carrying a prefix, واداري, للمستودعات, ومسؤول,
+# بالاتفاقيات, or a hamza variant, إستلام. Bulk correction from that list
+# would damage far more than it repaired, which is why every entry below was
+# confirmed by reading it in context on its own page.
+#
+# Each entry is a whole token, matched with Arabic-letter boundaries by
+# correct_ocr_misreads, never as a bare substring. That distinction is load
+# bearing now that the list is long: لتعامل sits inside the perfectly good
+# التعامل, which occurs 11 times, and لجد sits inside الجدول and الجديد. A
+# substring pass would have turned all fifteen of those into nonsense while
+# fixing two real errors.
 KNOWN_OCR_MISREADS = {
-    "الإجداءات": "الإجراءات",   # ر misread as د; Assets and warehouse, p8
-    "امنفذ": "المنفذ",           # ل dropped; Assets and warehouse, p10
+    # ر misread as د, the most common single defect in this corpus.
+    "الإجداءات": "الإجراءات",
+    "البديد": "البريد",
+    "للبديد": "للبريد",
+    "الصاددة": "الصادرة",
+    "الخادجية": "الخارجية",
+    "وادساله": "وارساله",
+    "الدسمية": "الرسمية",
+    "والدسائل": "والرسائل",
+    "الصغيدة": "الصغيرة",
+    "السديع": "السريع",
+
+    # ر dropped entirely.
+    "الديد": "البريد",
+    "البيد": "البريد",
+    "الواد": "الوارد",
+    "الصغدرة": "الصغيرة",
+
+    # A letter dropped from the definite article or the stem.
+    "امنفذ": "المنفذ",
+    "املفات": "الملفات",
+    "للفات": "لملفات",
+    "الستلم": "المستلم",
+    "لحتوبات": "المحتويات",
+    "لجد": "الجرد",
+    "لتعامل": "التعامل",
+    "لللحلية": "المحلية",
+    "ايوميا": "يوميا",
+    "شعدبا": "شهريا",
+    "متابعتا": "متابعة",
+
+    # Letters transposed.
+    "علميات": "عمليات",
+
+    # ه misread as ع.
+    "الجعات": "الجهات",
+
+    # A trailing letter dropped, where the truncation is not itself a word.
+    "النماذ": "النماذج",
+
+    # A word merged with the following one, where the join also lost a letter.
+    # Expanded back into two words, so the space is restored with the letter.
+    "البيدمن": "البريد من",
+    "الوادمن": "الوارد من",
 }
+
+# Arabic block. A key is a correction only when what surrounds it is not more
+# Arabic, which is what stops a short key matching inside a longer real word.
+_ARABIC = r"[؀-ۿ]"
+
+# One alternation, longest key first. The boundaries already make order
+# irrelevant, since البيد cannot match inside البيدمن when م follows it, but
+# sorting by length keeps that independence from resting on the lookahead
+# alone.
+_MISREAD_PATTERN = re.compile(
+    rf"(?<!{_ARABIC})(?:"
+    + "|".join(re.escape(k) for k in sorted(KNOWN_OCR_MISREADS, key=len, reverse=True))
+    + rf")(?!{_ARABIC})"
+)
+
+# An underscore standing alone between spaces is a space EasyOCR read as a
+# character, not punctuation the document contains. Measured: 114 occurrences
+# in the OCR route's prose and zero in the text layer's, which is what
+# identifies it as a recognition artifact rather than something on the page.
+# It is why the approval matrix reads مدير _ الفرع where the page says
+# مدير الفرع. A stray character inside a cell threatens nothing downstream on
+# its own, but it does put a word no query can match into a chunk.
+#
+# Whitespace before, and either whitespace or an Arabic letter after. The
+# second half was added after a page-by-page sweep against the source PDFs:
+# requiring whitespace on both sides fixed 87 cases and left 22 of the form
+# "تقرير _الجرد", where the underscore replaced the space but closed up
+# against the following word. Reading the page shows those to be the identical
+# artifact, and the earlier rule simply described the first shape it happened
+# to look at.
+#
+# The three it still leaves are the ones that belong to somebody else: two
+# cells opening "_1" and "_4", where the underscore stands in for a step
+# number's dash, and one trailing "1_". A digit after the underscore is what
+# separates them, and rows.py already reads that form; rewriting it here would
+# take the decision away from the module that measured it.
+LONE_UNDERSCORE = re.compile(r"(?<=\s)_(?=[\s؀-ۿ])")
 
 
 def correct_ocr_misreads(text: str) -> str:
@@ -118,7 +212,10 @@ def correct_ocr_misreads(text: str) -> str:
     Call after clean_text, on OCR-produced text only (ocr.py, layout.py).
     The text-layer route has its own, unrelated corruption and is handled by
     OCR replacing it entirely rather than by any correction here.
+
+    Matches whole Arabic tokens rather than substrings. The earlier version
+    used str.replace, which was safe while the list held two long, distinctive
+    keys and stopped being safe the moment it held short ones.
     """
-    for bad, good in KNOWN_OCR_MISREADS.items():
-        text = text.replace(bad, good)
-    return text
+    text = _MISREAD_PATTERN.sub(lambda m: KNOWN_OCR_MISREADS[m.group(0)], text)
+    return HORIZONTAL_WHITESPACE.sub(" ", LONE_UNDERSCORE.sub(" ", text))

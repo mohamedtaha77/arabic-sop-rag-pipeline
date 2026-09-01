@@ -4,6 +4,7 @@
     python cli.py ocr           extract via rendering and OCR
     python cli.py layout        extract tables and prose via OCR plus geometry
     python cli.py compare       score the two routes against each other
+    python cli.py chunk         split the layout output into retrievable chunks
 """
 
 from __future__ import annotations
@@ -39,6 +40,8 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("compare", help="score both routes against ground truth")
 
+    sub.add_parser("chunk", help="split the layout output into chunks")
+
     args = parser.parse_args(argv)
 
     if args.command == "textlayer":
@@ -52,6 +55,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "layout":
         from pipeline.ingestion import layout
         return 0 if layout.run(dpi=args.dpi) else 1
+
+    if args.command == "chunk":
+        from pipeline.chunking import chunker
+        return 0 if chunker.run() else 1
 
     from pipeline.ingestion import compare
     compare.run()
