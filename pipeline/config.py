@@ -131,6 +131,14 @@ PREFERRED_MODEL = "bge-m3"
 # a stage that gets re-run should pay for its GPU minutes once.
 EMBEDDING_CACHE_DIR = DATA_DIR / "embeddings"
 
+# BGE-M3's sparse (indices, values) pairs, cached separately from the dense
+# .npy files above because they are a different shape entirely and mixing
+# the two in one directory would need a naming convention to tell them
+# apart. Unused until stage 7 makes sparse embedding a per-query cost paid
+# repeatedly across an evaluation grid; the once-per-variant store build
+# never needed this.
+SPARSE_EMBEDDING_CACHE_DIR = DATA_DIR / "embeddings_sparse"
+
 # Qdrant in local file mode. No Docker, decided in the plan and unchanged: one
 # directory on disk, one collection per context variant.
 QDRANT_PATH = DATA_DIR / "qdrant"
@@ -158,3 +166,46 @@ BAKEOFF_OUTPUT = PROCESSED_DIR / "04_bakeoff.md"
 # bake-off has actually run, the same way golden.py refuses to verify a set
 # whose chunk file is missing.
 BAKEOFF_DECISION = PROCESSED_DIR / "04_bakeoff_decision.json"
+
+
+# --- hybrid retrieval ---------------------------------------------------------
+
+# Standard textbook values, not tuned. Fitting k1 and b to 18 golden
+# questions would fit the golden set rather than the corpus, the same
+# objection stage 7's plan raises against tuning fusion weights.
+BM25_K1 = 1.2
+BM25_B = 0.75
+
+# Reciprocal Rank Fusion's own constant, from the original paper and left
+# there: RRF needs no score normalisation across dense, sparse and BM25,
+# three systems whose raw scores are not on the same scale, which is the
+# whole reason RRF rather than a weighted score sum is used at all.
+RRF_K = 60
+
+# How many candidates each leg contributes to fusion before ranks are
+# combined. Wider than RETRIEVAL_K so a leg that ranks a gold chunk just
+# outside the top 10 on its own can still lift it back in after fusion.
+CANDIDATE_K = 50
+
+# Diversity caps, enforcing "answer from the whole corpus" in code. Measured
+# honestly rather than assumed to help: Q13's three gold chunks sit on two
+# adjacent pages, where a per-page cap costs recall, while Q19's three sit
+# one per manual, where a per-source cap is exactly what it needs.
+# evaluate.py's grid reports both settings rather than picking one on
+# instinct.
+MAX_PER_SOURCE = 5
+MAX_PER_PAGE = 3
+
+# MMR's own trade-off between relevance and novelty. 1.0 would be no
+# diversity term at all; this is a starting point evaluate.py's grid checks
+# rather than asserts.
+MMR_LAMBDA = 0.5
+
+RETRIEVAL_OUTPUT = PROCESSED_DIR / "05_retrieval.md"
+STOPWORD_REPORT = PROCESSED_DIR / "05_stopword_report.txt"
+
+# What stage 7 decided, read by stages 8 through 10 the same way store.qdrant
+# reads BAKEOFF_DECISION: an artifact on disk a downstream stage can refuse
+# to build against until it exists, rather than a constant edited by hand
+# after reading a table.
+RETRIEVAL_DECISION = PROCESSED_DIR / "05_retrieval_decision.json"

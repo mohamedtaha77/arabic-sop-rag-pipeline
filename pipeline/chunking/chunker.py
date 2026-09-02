@@ -2,8 +2,9 @@
 
 The five modules before this one each answer a narrow question. This one walks
 the corpus in reading order, hands each page to the right path, and assigns the
-two fields nothing local can decide: a chunk id, which needs a per-page
-counter, and a character count.
+three fields nothing local can decide: a chunk id, which needs a per-page
+counter, a character count, and an extraction quality verdict, which has to be
+read off the finished chunk text rather than off the page it came from.
 
 Prose comes before tables on a page, because a page's prose sits above and
 around its tables and reading it first puts the heading in the tracker's hands
@@ -28,6 +29,7 @@ from typing import Any
 
 from ..config import CHUNKS_OUTPUT, LAYOUT_OUTPUT
 from ..ingestion.document import Document
+from ..ingestion.quality import assess_quality
 from ..ingestion.storage import load_documents
 from .chunk import Chunk, make_chunk_id, save_chunks
 from .prose import prose_chunks
@@ -41,8 +43,19 @@ from .tables import FURNITURE_PAGES, table_chunks
 # is dropped content, which is what the gate exists to catch.
 EXPECTED_UNCOVERED = frozenset({"heading", "sub_heading", "actor", "grid"})
 
-# Metadata carried unchanged from the page a chunk came from.
-_INHERITED = ("doc_version", "issue_date", "review_date", "extraction_quality")
+# Metadata carried unchanged from the page a chunk came from. Version fields
+# only: all three describe the document, so every chunk on a page shares them
+# and inheriting is what they mean.
+#
+# extraction_quality used to sit in this tuple and was wrong there. layout.py
+# computes it from a page's prose_text alone, which is the only text it has at
+# that point, and this corpus is roughly 90% table by volume. Inheriting that
+# verdict labelled 134 of 357 chunks "empty", exactly half of every
+# procedure_block, on pages whose prose was empty while their tables held the
+# content the whole pipeline exists to retrieve. A verdict about text one chunk
+# never contained is not a fact about that chunk, so it is computed per chunk in
+# _finalise now, from the text that actually shipped.
+_INHERITED = ("doc_version", "issue_date", "review_date")
 
 
 def chunk_documents(documents: list[Document]) -> list[Chunk]:
@@ -81,10 +94,20 @@ def chunk_documents(documents: list[Document]) -> list[Chunk]:
 
 
 def _finalise(chunks: list[Chunk]) -> list[Chunk]:
-    """Assign chunk ids and character counts.
+    """Assign chunk ids, character counts, and each chunk's own quality verdict.
 
     Here rather than in the builders, so the counter an id depends on has one
     owner. Scoped to a page and a type for the reason make_chunk_id gives.
+
+    assess_quality runs again here, on the chunk's own text, even though
+    layout.py already ran it once on the page's prose_text and that verdict
+    still travels through as extraction_method's neighbour in the source
+    Document. The two calls answer different questions: layout.py's asks
+    whether a page's running prose decoded cleanly, before any table on that
+    page has been read into rows at all. A grid_row or procedure_block chunk
+    built entirely from a table never contained a byte of that prose, so its
+    text was never assessed by that call, only guessed at by inheritance. This
+    call assesses the text that actually shipped in this chunk.
     """
     counters: collections.Counter[tuple[str, int, str]] = collections.Counter()
     for chunk in chunks:
@@ -95,6 +118,7 @@ def _finalise(chunks: list[Chunk]) -> list[Chunk]:
         )
         counters[key] += 1
         meta["char_count"] = len(chunk.text)
+        meta["extraction_quality"] = assess_quality(chunk.text)["verdict"]
     return chunks
 
 

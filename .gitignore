@@ -6,6 +6,7 @@ data/ocr_cache/
 data/llm_cache/
 data/golden/
 data/embeddings/
+data/embeddings_sparse/
 data/qdrant/
 data/qdrant_browser.html
 

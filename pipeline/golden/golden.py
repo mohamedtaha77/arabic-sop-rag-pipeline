@@ -30,6 +30,7 @@ from .question import (
     Question,
     corpus_fingerprint,
     load_golden,
+    save_golden,
 )
 
 EXPECTED_QUESTION_COUNT = 20
@@ -282,6 +283,191 @@ def _gate8(fingerprint: dict, chunks_path: Path) -> list[str]:
             f"is stale or {chunks_path.name} changed underneath it."
         ]
     return []
+
+
+# --- refingerprinting, done only when proven safe -----------------------------
+
+# Every field a re-chunk could plausibly touch on a referenced chunk, checked
+# and reported by name rather than folded into a single pass/fail. A person
+# reading this list is what turns a rewrite into a decision instead of a
+# silent stamp.
+_REFERENCED_METADATA_FIELDS = (
+    "source", "page", "section_path", "chunk_type", "actor", "unit",
+    "table_id", "doc_version", "issue_date", "review_date",
+    "extraction_quality", "char_count",
+)
+
+
+def _referenced_chunk_ids(questions: list[Question]) -> set[str]:
+    """Every chunk id this golden set actually depends on.
+
+    Gold and distractor ids are the retrieval claims; evidence ids are where
+    an answer quote was copied from. All three have to survive a re-chunk
+    unchanged in text, or the reading pass no longer means what it says.
+    """
+    ids: set[str] = set()
+    for question in questions:
+        ids.update(question.gold_chunk_ids)
+        ids.update(question.distractor_chunk_ids)
+        ids.update(e.chunk_id for e in question.evidence)
+    return ids
+
+
+def _diff_against_previous(
+    questions: list[Question],
+    chunk_map: dict[str, Chunk],
+    previous_chunk_map: dict[str, Chunk],
+) -> list[str]:
+    """Compare every referenced chunk text, old build to new. Metadata is
+    reported separately by _report_metadata_moves, never gated here: a
+    metadata-only change is exactly what step 0's extraction_quality fix is
+    meant to produce, and only a text change invalidates the reading pass.
+    """
+    failures = []
+    for chunk_id in sorted(_referenced_chunk_ids(questions)):
+        old_chunk = previous_chunk_map.get(chunk_id)
+        new_chunk = chunk_map.get(chunk_id)
+        if old_chunk is None:
+            failures.append(
+                f"refingerprint: {chunk_id!r} is referenced by the golden set "
+                f"but is missing from the previous build; cannot confirm its "
+                f"text held still"
+            )
+            continue
+        if new_chunk is None:
+            # Already reported by gate 2 against the current build; skip
+            # rather than double-report the same missing id.
+            continue
+        if old_chunk.text != new_chunk.text:
+            failures.append(
+                f"refingerprint: {chunk_id!r} text changed between builds "
+                f"({len(old_chunk.text)} chars to {len(new_chunk.text)}); "
+                f"the reading pass was done against words that no longer "
+                f"exist there"
+            )
+    return failures
+
+
+def _report_metadata_moves(
+    questions: list[Question],
+    chunk_map: dict[str, Chunk],
+    previous_chunk_map: dict[str, Chunk],
+) -> None:
+    """Print every metadata field that moved on a referenced chunk.
+
+    Informational, never a failure: this is where step 0's 134
+    empty-to-ok transitions are meant to show up, read by a person before
+    the fingerprint is rewritten underneath them.
+    """
+    moves: dict[str, list[tuple[str, object, object]]] = {}
+    for chunk_id in sorted(_referenced_chunk_ids(questions)):
+        old_chunk = previous_chunk_map.get(chunk_id)
+        new_chunk = chunk_map.get(chunk_id)
+        if old_chunk is None or new_chunk is None:
+            continue
+        for field in _REFERENCED_METADATA_FIELDS:
+            old_value = old_chunk.metadata.get(field)
+            new_value = new_chunk.metadata.get(field)
+            if old_value != new_value:
+                moves.setdefault(field, []).append((chunk_id, old_value, new_value))
+
+    if not moves:
+        print("  no metadata field differs on any chunk the golden set references")
+        return
+    for field, changes in sorted(moves.items()):
+        print(f"  {field}: {len(changes)} referenced chunk(s) moved")
+        for chunk_id, old_value, new_value in changes[:5]:
+            print(f"    {chunk_id}: {old_value!r} -> {new_value!r}")
+        if len(changes) > 5:
+            print(f"    ... and {len(changes) - 5} more")
+
+
+def refingerprint(
+    path: Path = GOLDEN_SET,
+    chunks_path: Path = CHUNKS_OUTPUT,
+    previous_chunks_path: Path | None = None,
+    force: bool = False,
+) -> bool:
+    """Rewrite corpus_fingerprint against the current chunk build, once, and
+    only once every other thing that could have silently broken is checked.
+
+    Gate 8 exists to make a stale golden set loud; this is the one place
+    allowed to clear it, and it earns that by re-running gates 1 through 7
+    against the current build (gate 2's chunk-id resolution and gate 4's
+    evidence-containment check both bear directly on whether a re-chunk broke
+    something) and, when previous_chunks_path is given, by proving every
+    chunk the golden set actually depends on carries identical text to the
+    build the reading pass was done against. chunker.py's id scheme makes
+    that provable rather than merely likely: chunk ids are scoped to
+    (source, page, chunk_type, index), so a text change shows up as a text
+    change on the same id rather than as a silently renumbered one.
+
+    Without previous_chunks_path there is nothing on disk to prove text
+    held still against, since data/processed/ is entirely gitignored and
+    carries no history of its own. That case still requires force=True,
+    printed as what it is: gates 1 through 7 passing, not independent proof.
+    """
+    if not path.exists():
+        print(f"{path} not found. Write the skeleton first.")
+        return False
+    if not chunks_path.exists():
+        print(f"{chunks_path} not found. Run `python cli.py chunk` first.")
+        return False
+
+    questions, old_fingerprint = load_golden(path)
+    chunks = load_chunks(chunks_path)
+    chunk_map = _chunk_map(chunks)
+
+    print(f"re-fingerprinting {path.name} against {chunks_path.name} "
+          f"({len(chunks)} chunks)")
+
+    failures = []
+    failures += _gate1(questions)
+    failures += _gate2(questions, chunks)
+    failures += _gate3(questions)
+    failures += _gate4(questions, chunk_map)
+    failures += _gate5(questions)
+    failures += _gate6(questions)
+    failures += _gate7(questions, chunk_map)
+    if failures:
+        print("\nRefusing: gates 1-7 must pass before the fingerprint moves")
+        for failure in failures:
+            print(f"  FAIL  {failure}")
+        return False
+
+    if previous_chunks_path is not None:
+        if not previous_chunks_path.exists():
+            print(f"{previous_chunks_path} not found")
+            return False
+        previous_chunk_map = _chunk_map(load_chunks(previous_chunks_path))
+        text_failures = _diff_against_previous(questions, chunk_map, previous_chunk_map)
+        print(f"\nText check against {previous_chunks_path.name}, "
+              f"{len(_referenced_chunk_ids(questions))} referenced chunks")
+        if text_failures:
+            for failure in text_failures:
+                print(f"  FAIL  {failure}")
+            print("\nRefusing: the reading pass no longer matches the corpus")
+            return False
+        print("  ok  every referenced chunk's text is unchanged")
+
+        print("\nMetadata moves on referenced chunks:")
+        _report_metadata_moves(questions, chunk_map, previous_chunk_map)
+    elif not force:
+        print("\nNo previous_chunks_path given: gates 1-7 passed, but text "
+              "identity on referenced chunks was not independently confirmed. "
+              "Pass --previous <snapshot> to prove it, or force=True to "
+              "proceed on gates 1-7 alone.")
+        return False
+    else:
+        print("\nProceeding on gates 1-7 alone; text identity was not "
+              "independently confirmed (no previous_chunks_path given).")
+
+    new_fingerprint = corpus_fingerprint(chunks_path)
+    print(f"\nfingerprint: {old_fingerprint['sha256'][:12]}... to "
+          f"{new_fingerprint['sha256'][:12]}...")
+    save_golden(questions, new_fingerprint, path)
+    print(f"written to {path}")
+    return True
 
 
 # --- verification -------------------------------------------------------------

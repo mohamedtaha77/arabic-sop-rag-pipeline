@@ -73,6 +73,23 @@ def main(argv: list[str] | None = None) -> int:
              "SLUG:START-END values, e.g. alarm:5-8, render just those pages "
              "on demand without touching the worksheet.",
     )
+    golden_parser.add_argument(
+        "--refingerprint", action="store_true",
+        help="rewrite corpus_fingerprint against the current chunk build, "
+             "after re-checking gates 1-7 and, if --previous is given, "
+             "proving every referenced chunk's text is unchanged",
+    )
+    golden_parser.add_argument(
+        "--previous", type=str, default=None, metavar="PATH",
+        help="a chunk file snapshot from before the re-chunk, checked "
+             "against the current one so --refingerprint can prove text "
+             "identity rather than merely trust gates 1-7",
+    )
+    golden_parser.add_argument(
+        "--force", action="store_true",
+        help="with --refingerprint and no --previous, proceed on gates 1-7 "
+             "alone without independent proof of text identity",
+    )
 
     embed_parser = sub.add_parser(
         "embed", help="token census, the bake-off, or the embed run"
@@ -88,6 +105,11 @@ def main(argv: list[str] | None = None) -> int:
         help="score both models over all three variants against the golden "
              "set and write the model decision",
     )
+    embed_group.add_argument(
+        "--visualize", action="store_true",
+        help="project the winning model's dense vectors to 2D with PCA and "
+             "write a local, offline HTML scatter plot; embeds nothing new",
+    )
 
     store_parser = sub.add_parser(
         "store", help="the sparse-vector probe, build the store, or browse it"
@@ -102,6 +124,32 @@ def main(argv: list[str] | None = None) -> int:
         "--browse", action="store_true",
         help="write a local, offline HTML page for browsing what is in the "
              "store; opens in a browser, nothing is uploaded anywhere",
+    )
+
+    retrieve_parser = sub.add_parser(
+        "retrieve", help="hybrid retrieval: the grid, the device probe, or one query"
+    )
+    retrieve_group = retrieve_parser.add_mutually_exclusive_group()
+    retrieve_group.add_argument(
+        "--evaluate", action="store_true",
+        help="score every mode over every context variant, with and "
+             "without diversity caps, against the golden set, and write "
+             "the shipping decision",
+    )
+    retrieve_group.add_argument(
+        "--stopwords", action="store_true",
+        help="write the document-frequency report the frozen stopword "
+             "list in retrieval/text.py was chosen from; retrieves nothing",
+    )
+    retrieve_group.add_argument(
+        "--device-probe", action="store_true",
+        help="compare CPU and GPU query-time embedding latency, memory "
+             "and cosine agreement, each in its own subprocess",
+    )
+    retrieve_group.add_argument(
+        "query", nargs="?", default=None,
+        help="run one question through the shipping configuration and "
+             "print the ranked chunk ids",
     )
 
     args = parser.parse_args(argv)
@@ -134,8 +182,14 @@ def main(argv: list[str] | None = None) -> int:
         return context.run(variants=variants)
 
     if args.command == "golden":
+        from pathlib import Path
         from pipeline.golden import worksheet
         from pipeline.golden import golden as golden_module
+        if args.refingerprint:
+            previous = Path(args.previous) if args.previous else None
+            return 0 if golden_module.refingerprint(
+                previous_chunks_path=previous, force=args.force
+            ) else 1
         if args.pages is not None:
             if args.pages:
                 return 0 if worksheet.run_pages(args.pages) else 1
@@ -149,6 +203,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.bakeoff:
             from pipeline.embedding import run as bakeoff_run
             return 0 if bakeoff_run.run() else 1
+        if args.visualize:
+            from pipeline.embedding import visualize
+            return 0 if visualize.run() else 1
         from pipeline.embedding import bakeoff
         return 0 if bakeoff.run_embed() else 1
 
@@ -161,6 +218,33 @@ def main(argv: list[str] | None = None) -> int:
             return 0 if browse.run() else 1
         from pipeline.store import qdrant
         return 0 if qdrant.run() else 1
+
+    if args.command == "retrieve":
+        if args.evaluate:
+            from pipeline.retrieval import evaluate
+            return 0 if evaluate.run() else 1
+        if args.stopwords:
+            import json as _json
+            from pipeline.chunking.chunk import load_chunks
+            from pipeline.config import CONTEXT_OUTPUTS, STOPWORD_REPORT
+            from pipeline.retrieval.text import document_frequency_report
+            chunks = load_chunks(CONTEXT_OUTPUTS["none"])
+            report = document_frequency_report([c.text for c in chunks])
+            STOPWORD_REPORT.parent.mkdir(parents=True, exist_ok=True)
+            STOPWORD_REPORT.write_text(report, encoding="utf-8")
+            print(f"written to {STOPWORD_REPORT}")
+            return 0
+        if args.device_probe:
+            from pipeline.retrieval import device_probe
+            return 0 if device_probe.run() else 1
+        if args.query:
+            from pipeline.retrieval.retriever import retrieve_shipping
+            ranked = retrieve_shipping(args.query)
+            for i, chunk_id in enumerate(ranked, 1):
+                print(f"{i}. {chunk_id}")
+            return 0
+        retrieve_parser.print_help()
+        return 1
 
     from pipeline.ingestion import compare
     compare.run()

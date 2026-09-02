@@ -21,6 +21,7 @@ from pathlib import Path
 
 from qdrant_client import QdrantClient
 
+from ..chunking.chunk import CHUNK_TYPE_COLORS
 from ..config import CONTEXT_VARIANTS, DATA_DIR, QDRANT_PATH
 from .qdrant import PAYLOAD_FIELDS, collection_name
 
@@ -58,45 +59,87 @@ def render_html(data: dict[str, list[dict]]) -> str:
         f'<option value="{html.escape(v)}">{html.escape(v)}</option>' for v in data
     )
     columns_json = json.dumps(_COLUMNS)
+    type_colors_json = json.dumps(CHUNK_TYPE_COLORS)
     return f"""<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <title>GBG vector store browser</title>
 <style>
-  :root {{ color-scheme: light dark; }}
-  body {{ font-family: system-ui, sans-serif; margin: 0; background: #f7f7f8; color: #1a1a1a; }}
-  header {{ padding: 12px 16px; background: #1a1a1a; color: #fff; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }}
-  header h1 {{ font-size: 15px; margin: 0; font-weight: 600; }}
-  header select, header input {{ padding: 6px 8px; border-radius: 6px; border: 1px solid #444; font-size: 13px; }}
+  /* Housing Bank's own two colors, read off hbtf.com's live stylesheet
+     rather than guessed: #005295 is the dominant navy across its headings,
+     nav and active states (400+ occurrences), #c8b18b the gold accent on
+     its buttons and borders. No logo or wordmark is reproduced here, only
+     the two colors, on a page that never leaves this machine. */
+  :root {{
+    color-scheme: light dark;
+    --navy: #005295;
+    --navy-deep: #003a6b;
+    --gold: #c8b18b;
+    --gold-deep: #a9823f;
+    --paper: #f7f7f8;
+    --surface: #fff;
+    --ink: #262626;
+    --muted: #6b6b6b;
+    --border: #e2e6ea;
+    --hover: #eaf1f8;
+  }}
+  body {{ font-family: system-ui, sans-serif; margin: 0; background: var(--paper); color: var(--ink); }}
+  header {{
+    padding: 12px 16px; color: #fff; display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
+    background: linear-gradient(135deg, var(--navy) 0%, var(--navy-deep) 100%);
+    border-bottom: 3px solid var(--gold);
+  }}
+  header h1 {{ font-size: 15px; margin: 0; font-weight: 600; letter-spacing: .02em; }}
+  header h1 .dot {{ display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--gold); margin-right: 6px; }}
+  header select, header input {{
+    padding: 6px 10px; border-radius: 6px; border: 1px solid rgba(255,255,255,.35);
+    font-size: 13px; background: rgba(255,255,255,.12); color: #fff;
+  }}
+  header select option {{ color: var(--ink); }}
   header input {{ flex: 1; min-width: 200px; }}
-  #count {{ font-size: 12px; color: #aaa; }}
-  table {{ width: 100%; border-collapse: collapse; background: #fff; }}
-  th, td {{ padding: 6px 10px; border-bottom: 1px solid #e5e5e5; font-size: 12px; text-align: left; vertical-align: top; }}
-  th {{ position: sticky; top: 0; background: #efefef; cursor: pointer; user-select: none; }}
-  tr:hover {{ background: #f0f6ff; cursor: pointer; }}
+  header input::placeholder {{ color: rgba(255,255,255,.7); }}
+  header select:focus, header input:focus {{ outline: 2px solid var(--gold); outline-offset: 1px; }}
+  #count {{ font-size: 12px; color: var(--gold); font-weight: 600; white-space: nowrap; }}
+  table {{ width: 100%; border-collapse: collapse; background: var(--surface); }}
+  th, td {{ padding: 7px 10px; border-bottom: 1px solid var(--border); font-size: 12px; text-align: left; vertical-align: top; }}
+  th {{
+    position: sticky; top: 0; background: var(--navy); color: #fff; cursor: pointer;
+    user-select: none; font-weight: 600; border-bottom: 2px solid var(--gold);
+  }}
+  th:hover {{ background: var(--navy-deep); }}
+  th.sorted {{ color: var(--gold); }}
+  tr:hover {{ background: var(--hover); cursor: pointer; }}
+  tr:nth-child(even) {{ background: rgba(0,82,149,.03); }}
   td.rtl, .detail-text {{ direction: rtl; unicode-bidi: plaintext; text-align: right; font-size: 14px; }}
-  #detail {{ display: none; position: fixed; inset: 0; background: rgba(0,0,0,.4); }}
-  #detail .panel {{ position: absolute; right: 0; top: 0; bottom: 0; width: min(560px, 92vw); background: #fff; padding: 18px; overflow-y: auto; box-shadow: -4px 0 16px rgba(0,0,0,.2); }}
-  #detail .panel dt {{ font-size: 11px; color: #888; margin-top: 10px; }}
+  .chip {{
+    display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11px;
+    font-weight: 600; color: #fff; white-space: nowrap;
+  }}
+  #detail {{ display: none; position: fixed; inset: 0; background: rgba(0,40,74,.45); }}
+  #detail .panel {{
+    position: absolute; right: 0; top: 0; bottom: 0; width: min(560px, 92vw); background: var(--surface);
+    padding: 18px; overflow-y: auto; box-shadow: -4px 0 20px rgba(0,40,74,.35);
+    border-left: 6px solid var(--gold);
+  }}
+  #detail .panel dt {{ font-size: 11px; color: var(--navy); font-weight: 700; text-transform: uppercase; letter-spacing: .04em; margin-top: 12px; }}
   #detail .panel dd {{ margin: 2px 0 0 0; font-size: 13px; }}
-  #detail .close {{ float: right; cursor: pointer; font-size: 20px; border: none; background: none; }}
-  #detail .detail-text {{ white-space: pre-wrap; margin-top: 4px; padding: 10px; background: #f7f7f8; border-radius: 6px; }}
+  #detail .close {{ float: right; cursor: pointer; font-size: 20px; border: none; background: none; color: var(--navy); }}
+  #detail .close:hover {{ color: var(--gold-deep); }}
+  #detail .detail-text {{ white-space: pre-wrap; margin-top: 4px; padding: 10px; background: var(--paper); border-radius: 6px; border-right: 3px solid var(--gold); }}
   @media (prefers-color-scheme: dark) {{
-    body {{ background: #16171a; color: #e8e8e8; }}
-    table {{ background: #1e1f23; }}
-    th {{ background: #26272c; }}
-    th, td {{ border-color: #333; }}
-    tr:hover {{ background: #232635; }}
-    #detail .panel {{ background: #1e1f23; }}
-    #detail .panel dt {{ color: #999; }}
-    #detail .detail-text {{ background: #16171a; }}
+    :root {{
+      --paper: #0f1720; --surface: #16212c; --ink: #e8e8e8; --muted: #9aa5ad;
+      --border: #223142; --hover: #1c2e40; --navy-deep: #06263f;
+    }}
+    header {{ background: linear-gradient(135deg, #003a6b 0%, #041e33 100%); }}
+    #detail {{ background: rgba(0,10,20,.6); }}
   }}
 </style>
 </head>
 <body>
 <header>
-  <h1>GBG vector store</h1>
+  <h1><span class="dot"></span>GBG vector store</h1>
   <select id="variant">{variant_options}</select>
   <input id="filter" type="text" placeholder="filter (chunk id, source, section, actor, text)">
   <span id="count"></span>
@@ -112,6 +155,9 @@ def render_html(data: dict[str, list[dict]]) -> str:
 <script>
 const DATA = {payload_json};
 const COLUMNS = {columns_json};
+// From chunk.CHUNK_TYPE_COLORS, so this file and embedding/visualize.py
+// never carry two definitions of the same mapping that could drift apart.
+const TYPE_COLORS = {type_colors_json};
 const variantSel = document.getElementById('variant');
 const filterBox = document.getElementById('filter');
 const head = document.getElementById('head');
@@ -124,6 +170,15 @@ let sortCol = null, sortDir = 1;
 
 function currentRows() {{
   return DATA[variantSel.value] || [];
+}}
+
+function escapeHtml(s) {{
+  return s.replace(/[&<>"']/g, m => ({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[m]));
+}}
+
+function chipHtml(chunkType) {{
+  const color = TYPE_COLORS[chunkType] || '#7d7d7d';
+  return `<span class="chip" style="background:${{color}}">${{escapeHtml(chunkType)}}</span>`;
 }}
 
 function render() {{
@@ -139,9 +194,11 @@ function render() {{
     }});
   }}
   countEl.textContent = rows.length + ' / ' + currentRows().length + ' chunks';
+  head.querySelectorAll('th').forEach(th => th.classList.toggle('sorted', th.dataset.col === sortCol));
   body.innerHTML = rows.map((r, i) => {{
     const cells = COLUMNS.map(c => {{
       const v = r[c] ?? '';
+      if (c === 'chunk_type') return `<td>${{chipHtml(String(v))}}</td>`;
       const rtl = /[\\u0600-\\u06FF]/.test(String(v));
       return `<td class="${{rtl ? 'rtl' : ''}}">${{escapeHtml(String(v))}}</td>`;
     }}).join('');
@@ -152,10 +209,6 @@ function render() {{
   }});
 }}
 
-function escapeHtml(s) {{
-  return s.replace(/[&<>"']/g, m => ({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[m]));
-}}
-
 function showDetail(row) {{
   const dl = document.getElementById('detailBody');
   const allFields = COLUMNS.concat(['doc_version', 'issue_date', 'review_date', 'unit', 'table_id',
@@ -163,7 +216,8 @@ function showDetail(row) {{
   let out = '';
   for (const f of allFields) {{
     if (row[f] === undefined || row[f] === null || row[f] === '') continue;
-    out += `<dt>${{f}}</dt><dd>${{escapeHtml(String(row[f]))}}</dd>`;
+    const value = f === 'chunk_type' ? chipHtml(String(row[f])) : escapeHtml(String(row[f]));
+    out += `<dt>${{f}}</dt><dd>${{value}}</dd>`;
   }}
   out += `<dt>text</dt><dd class="detail-text">${{escapeHtml(row.text || '')}}</dd>`;
   dl.innerHTML = out;

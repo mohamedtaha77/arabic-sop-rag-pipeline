@@ -482,12 +482,39 @@ store bug. BGE-M3's learned sparse vectors are written alongside the dense
 ones, once the local store was confirmed to accept them by creating a real
 collection rather than trusted to a changelog.
 
-## Planned design decisions
+## Retrieval
 
-Retrieval will be hybrid rather than vector only. Exact role names, rule numbers,
-and form codes are lexical matching problems that embeddings blur and BM25
-handles precisely. Vector-only retrieval performs acceptably in casual testing
-and fails on exactly the questions this corpus exists to answer.
+Three legs, dense cosine, BGE-M3's own learned sparse vector, and a
+hand-written Okapi BM25 over a corpus-measured Arabic tokenizer, fused by
+Reciprocal Rank Fusion and optionally diversity-capped, decided against the
+same golden set by the same paired-bootstrap rule that settled the model
+bake-off: a candidate replaces the baseline only if its 95% CI excludes zero,
+in its favour, on both Recall@10 and MRR@10.
+
+No candidate cleared that bar. The baseline stage 6 already shipped, BGE-M3,
+the template context variant, dense retrieval alone, ships forward
+unchanged. Every leg stays implemented and independently switchable, so the
+finding is measured rather than assumed: on this corpus, at this scale,
+hybrid retrieval did not earn its place over a strong dense baseline once
+the fusion weight was left undisturbed rather than searched until something
+won. Diversity caps cost recall in every grid cell they were tried in and
+are not part of the shipping configuration for the same reason.
+
+Arabic BM25 needed more than splitting on spaces: a corpus-measured
+stopword list (derived from the unprefixed chunk variant specifically,
+since the context-prefixed variant's own boilerplate would otherwise look
+like stopwords), conservative prefix-clitic stripping, and Arabic-Indic
+digit folding. Clitic stripping alone lifted BM25's Recall@10 from 0.630 to
+0.769 on the golden set, measured inside the real pipeline, not asserted.
+
+Query-time embedding runs on CPU by default, a measured trade-off rather
+than the GPU-everywhere default: BGE-M3's own dense and sparse query
+vectors could load onto the same 4 GB card Ollama needs for generation,
+about 6x faster per query, but at roughly 1.1 GB of VRAM held for as long
+as the embedder stays resident. 178ms against a generation call timed out
+at 300 seconds is negligible; 1.1 GB against a 4 GB budget is not.
+
+## Planned design decisions
 
 The manuals cross-reference governing policies that are not part of the corpus,
 including a procurement policy and a delegation of authority document. Queries

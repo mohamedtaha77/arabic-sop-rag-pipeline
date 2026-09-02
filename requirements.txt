@@ -35,3 +35,9 @@ huggingface_hub==0.36.2
 # Local vector store, file mode, no Docker. One collection per context
 # variant.
 qdrant-client==1.19.0
+
+# Stage 7's device_probe.py reads this process's own RSS to measure the
+# host memory cost of the CPU-versus-GPU query embedding trade-off. Already
+# present as a transitive dependency of accelerate; declared directly here
+# because this project imports it by name, not just benefits from it.
+psutil==7.2.2

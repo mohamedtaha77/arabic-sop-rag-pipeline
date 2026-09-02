@@ -96,18 +96,49 @@ _PREFIXES: dict[str, dict[str, str]] = {
 
 # --- model lifecycle, one resident at a time ----------------------------------
 
-_model_cache: dict[str, tuple] = {}
+_model_cache: dict[tuple[str, str], tuple] = {}
 
 
-def _device_and_dtype() -> tuple[str, torch.dtype]:
-    if torch.cuda.is_available():
-        return "cuda", torch.float16
-    return "cpu", torch.float32
+def _device_and_dtype(device: str | None = None) -> tuple[str, torch.dtype]:
+    """Resolve a device request to (device, dtype).
+
+    device=None is the original, sole policy every index-time call site
+    still uses: auto-detect, cuda if it is there. An explicit device is
+    what stage 7's retriever asks for at query time, when Ollama may
+    already be resident on the card and the architecture plan's own
+    component table says the embedder should stay off it during a query;
+    see LEARNING/retrieval.md for what that choice actually cost, measured
+    rather than assumed.
+    """
+    if device is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+    elif device == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError("device='cuda' requested but CUDA is not available")
+    dtype = torch.float16 if device == "cuda" else torch.float32
+    return device, dtype
 
 
-def _load_model(model_key: str):
-    """Load and cache one model. Loading a second while one is resident is a
-    caller error on this card: bakeoff.py calls release() between them.
+def _load_model(model_key: str, device: str | None = None):
+    """Load and cache one model on one device. Loading a second distinct
+    checkpoint, or the same checkpoint a second time on any device, while
+    one is already resident is a caller error on this machine: bakeoff.py
+    calls release() between candidates, each in its own subprocess.
+
+    That last clause is not a hedge. Confirmed directly while building
+    stage 7's device policy: a second `AutoModel.from_pretrained` call in
+    a process that has already moved a model to CUDA once segfaults even
+    when the second load's own destination is CPU and never calls
+    `.to("cuda")` at all. embedding.md's original finding described the
+    fault as "a second CUDA transfer"; this is narrower and worse, a
+    second *load* full stop, so a CPU-versus-GPU comparison for the same
+    model has to run as two separate subprocesses, the same isolation
+    bakeoff.py already needed for two different checkpoints, never as one
+    load-release-reload sequence in this process.
+
+    The cache key is (model_key, device), not model_key alone, so a
+    CPU-resident load and a GPU-resident load of the same checkpoint
+    cannot collide and silently shadow one another if a caller ever did
+    hold both, however briefly.
 
     Casting to fp16 and moving to CUDA happen as two separate calls, not
     one. Measured directly on this 4 GB card, on both candidates: a combined
@@ -119,22 +150,24 @@ def _load_model(model_key: str):
     the already-halved model, not the fp32 original, ever has to fit on the
     card, and that path has not reproduced the failure.
     """
-    if model_key not in _model_cache:
+    resolved_device, dtype = _device_and_dtype(device)
+    cache_key = (model_key, resolved_device)
+    if cache_key not in _model_cache:
         from transformers import AutoModel
 
-        device, dtype = _device_and_dtype()
         model = AutoModel.from_pretrained(EMBED_MODELS[model_key])
         if dtype is not torch.float32:
             model = model.to(dtype=dtype)
-        model = model.to(device)
+        model = model.to(resolved_device)
         model.eval()
-        _model_cache[model_key] = (model, device, dtype)
-        print(f"  loaded {model_key} on {device} ({dtype})")
-    return _model_cache[model_key]
+        _model_cache[cache_key] = (model, resolved_device, dtype)
+        print(f"  loaded {model_key} on {resolved_device} ({dtype})")
+    return _model_cache[cache_key]
 
 
 def release(model_key: str | None = None) -> None:
-    """Free a resident model's GPU memory. None releases whichever is loaded.
+    """Free a resident model's GPU memory. None releases whichever is loaded,
+    on every device it happens to be cached on.
 
     Two XLM-R-large models do not share a 4 GB card. Calling this between
     candidates is what makes the bake-off possible on this machine rather
@@ -149,7 +182,10 @@ def release(model_key: str | None = None) -> None:
     card nvidia-smi reported fully idle: memory the allocator had not yet
     been told to give back.
     """
-    keys = [model_key] if model_key else list(_model_cache)
+    keys = (
+        [key for key in _model_cache if key[0] == model_key] if model_key
+        else list(_model_cache)
+    )
     for key in keys:
         _model_cache.pop(key, None)
     if torch.cuda.is_available():
@@ -160,20 +196,31 @@ def release(model_key: str | None = None) -> None:
 
 # --- disk cache, content-addressed like ocr.py and llm/cache.py --------------
 
-def _cache_key(text: str, model_key: str, kind: Kind) -> str:
+def _cache_key(text: str, model_key: str, kind: Kind, device: str | None = None) -> str:
     """Hash of everything that determines the vector.
 
     Content-addressed on the text itself, not on a chunk id: the none,
     template and llm variants share no text once a prefix is added, so this
     never needs to know which variant a chunk came from, and a chunk edited
     upstream simply gets a new key rather than a stale hit.
+
+    device resolves through _device_and_dtype before hashing, not stored as
+    whatever the caller literally passed, so a None (auto) request and an
+    explicit request that happen to resolve the same way still share a
+    cache entry, while a genuine CPU-fp32 vector and a GPU-fp16 vector for
+    the same text never can: stage 7's device-policy measurement depends on
+    comparing exactly those two, and a shared cache entry would silently
+    erase the difference it exists to measure.
     """
+    resolved_device, dtype = _device_and_dtype(device)
     material = json.dumps(
         {
             "model": EMBED_MODELS[model_key],
             "pooling": _POOLING[model_key].__name__,
             "prefix": _PREFIXES[model_key][kind],
             "max_length": max_content_length(model_key),
+            "device": resolved_device,
+            "dtype": str(dtype),
             "text": text,
         },
         ensure_ascii=False,
@@ -186,14 +233,19 @@ def _cache_path(key: str) -> Path:
     return EMBEDDING_CACHE_DIR / f"{key}.npy"
 
 
-def _load_cached(text: str, model_key: str, kind: Kind) -> np.ndarray | None:
-    path = _cache_path(_cache_key(text, model_key, kind))
+def _load_cached(
+    text: str, model_key: str, kind: Kind, device: str | None = None
+) -> np.ndarray | None:
+    path = _cache_path(_cache_key(text, model_key, kind, device))
     if not path.exists():
         return None
     return np.load(path)
 
 
-def _store_cached(text: str, model_key: str, kind: Kind, vector: np.ndarray) -> None:
+def _store_cached(
+    text: str, model_key: str, kind: Kind, vector: np.ndarray,
+    device: str | None = None,
+) -> None:
     """Write one vector to disk, .npy rather than JSON.
 
     llm/cache.py stores its prompt beside the answer because Arabic prompts
@@ -202,13 +254,14 @@ def _store_cached(text: str, model_key: str, kind: Kind, vector: np.ndarray) -> 
     faster to load back, not the one that is inspectable.
     """
     EMBEDDING_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    np.save(_cache_path(_cache_key(text, model_key, kind)), vector)
+    np.save(_cache_path(_cache_key(text, model_key, kind, device)), vector)
 
 
 # --- encoding ------------------------------------------------------------------
 
 def _encode_uncached(
-    texts: list[str], model_key: str, kind: Kind, batch_size: int
+    texts: list[str], model_key: str, kind: Kind, batch_size: int,
+    device: str | None = None,
 ) -> np.ndarray:
     """Run the model over texts with no cache lookups at all: pure compute.
 
@@ -216,7 +269,7 @@ def _encode_uncached(
     back, so a card that had to fall back once is not asked to try the
     original size again on the very next batch.
     """
-    model, device, dtype = _load_model(model_key)
+    model, device, dtype = _load_model(model_key, device)
     tokenizer = get_tokenizer(model_key)
     pool = _POOLING[model_key]
     prefix = _PREFIXES[model_key][kind]
@@ -257,17 +310,22 @@ def _encode_uncached(
 def embed_texts(
     texts: list[str], model_key: str, kind: Kind,
     batch_size: int = EMBED_BATCH_SIZE, use_cache: bool = True,
+    device: str | None = None,
 ) -> np.ndarray:
     """Unit-norm vectors for every text, cache-aware, in the input order.
 
     kind is "query" or "passage": e5-large needs a different prefix for each
     and BGE-M3's card says it needs neither, so the distinction is carried
     through the call rather than left for a caller to guess which applies.
+
+    device is None everywhere except retriever.py's query-time call sites,
+    which is what keeps every existing caller, the bake-off, run_embed, the
+    store build, on the original auto-detect behaviour with no change here.
     """
     vectors: list[np.ndarray | None] = [None] * len(texts)
     to_compute: list[int] = []
     for i, text in enumerate(texts):
-        cached = _load_cached(text, model_key, kind) if use_cache else None
+        cached = _load_cached(text, model_key, kind, device) if use_cache else None
         if cached is not None:
             vectors[i] = cached
         else:
@@ -275,12 +333,12 @@ def embed_texts(
 
     if to_compute:
         fresh = _encode_uncached(
-            [texts[i] for i in to_compute], model_key, kind, batch_size
+            [texts[i] for i in to_compute], model_key, kind, batch_size, device
         )
         for idx, vector in zip(to_compute, fresh):
             vectors[idx] = vector
             if use_cache:
-                _store_cached(texts[idx], model_key, kind, vector)
+                _store_cached(texts[idx], model_key, kind, vector, device)
 
     return np.stack(vectors)
 

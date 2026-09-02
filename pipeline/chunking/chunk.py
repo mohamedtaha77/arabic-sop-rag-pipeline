@@ -44,6 +44,23 @@ CHUNK_TYPES = (
     "prose",
 )
 
+# One color per chunk_type, shared by every local viewer this project builds
+# (store/browse.py, embedding/visualize.py) so a color means the same thing
+# wherever it appears. Chosen to stay in the family of Housing Bank's own two
+# brand colors, navy and gold, each given a lighter and a deeper shade, with
+# four further hues added only so all eight types stay told apart at a
+# glance. Never read by any gate or any retrieval code; it is display only.
+CHUNK_TYPE_COLORS = {
+    "procedure_block": "#005295",
+    "prose": "#5b8fb9",
+    "grid_row": "#c8b18b",
+    "grid_table": "#a9823f",
+    "accounting_entry": "#3c7a5c",
+    "approval": "#6b4c9a",
+    "reference": "#7d7d7d",
+    "revision": "#b6484f",
+}
+
 
 @dataclass
 class Chunk:
@@ -68,7 +85,9 @@ class Chunk:
         doc_version         version fields, carried from ingestion
         issue_date
         review_date
-        extraction_quality  so retrieval can down-rank a degraded page
+        extraction_quality  assess_quality's verdict on this chunk's own
+                            text, computed once chunker.py knows what
+                            that text is; see chunker._finalise
         char_count          length of text
 
     ``context_prefix`` is absent on purpose. Stage 4 adds it, and a placeholder
