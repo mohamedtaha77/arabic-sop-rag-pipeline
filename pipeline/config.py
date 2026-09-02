@@ -82,3 +82,79 @@ JUDGE_MODEL = "llama3.2:3b-instruct-q4_K_M"
 # fluent answer built on half the evidence, which is quality.py's failure mode
 # exactly: it returns, it reads well, and nothing appears in the logs.
 LLM_CONTEXT = 8192
+
+
+# --- golden set --------------------------------------------------------------
+
+GOLDEN_DIR = DATA_DIR / "golden"
+GOLDEN_SET = GOLDEN_DIR / "golden_set.json"
+GOLDEN_PAGES_DIR = GOLDEN_DIR / "pages"
+
+# The worksheet a person reads from, in the same register as
+# CONTEXT_SAMPLES_OUTPUT: text meant for an editor, not JSON meant for code.
+GOLDEN_WORKSHEET = GOLDEN_DIR / "worksheet.txt"
+
+# Render resolution for a person reading a page on screen, not for OCR. RENDER_DPI
+# is 300 because ingestion measured 600 as four times the runtime for no accuracy
+# gain, and that measurement is about EasyOCR's recognition model, a fact about a
+# recogniser rather than an eye. Reading by eye is a different consumer with a
+# different failure mode, cropped or blurred detail rather than a misrecognised
+# glyph, so it gets its own constant rather than borrowing one whose
+# justification does not transfer.
+GOLDEN_RENDER_DPI = 400
+
+
+# --- embedding and the vector store -------------------------------------------
+
+# The two candidates for the bake-off, short name to HuggingFace id.
+#
+# Only the identity lives here. How each one pools its hidden states, and which
+# prefixes it needs on a query as against a passage, live in embedder.py beside
+# the functions that implement them: that is behaviour, not configuration, and
+# separating a pooling rule from its code is how the two drift apart.
+#
+# Both are XLM-RoBERTa-large. The library choice therefore decides nothing about
+# Arabic and the weights decide everything, which is what makes this a bake-off
+# rather than a preference.
+EMBED_MODELS = {
+    "bge-m3": "BAAI/bge-m3",
+    "e5-large": "intfloat/multilingual-e5-large",
+}
+
+# The prior, named here so the bake-off's tie-break rule has something to point
+# at rather than a string typed twice. One model producing both dense and
+# learned sparse vectors removes a whole component from stage 7; that is an
+# argument for a tie, never for a result.
+PREFERRED_MODEL = "bge-m3"
+
+# Vectors are cached to disk on the same principle as the OCR and LLM caches:
+# a stage that gets re-run should pay for its GPU minutes once.
+EMBEDDING_CACHE_DIR = DATA_DIR / "embeddings"
+
+# Qdrant in local file mode. No Docker, decided in the plan and unchanged: one
+# directory on disk, one collection per context variant.
+QDRANT_PATH = DATA_DIR / "qdrant"
+COLLECTION_PREFIX = "gbg_"
+
+# 4096 MiB of VRAM holds one XLM-R-large at fp16 with room for activations, and
+# does not hold two. Eight sequences of up to 8,192 tokens is the conservative
+# starting point; embedder.py halves it on an OOM and says that it did, rather
+# than dying or silently succeeding at a size nobody chose.
+EMBED_BATCH_SIZE = 8
+
+# The k the golden set is scored at, from the plan: Recall@10 and MRR. Named
+# once so the metric functions, the store's search and gate 6's brute-force
+# comparison cannot disagree about what "top 10" means.
+RETRIEVAL_K = 10
+
+TOKEN_CENSUS_OUTPUT = PROCESSED_DIR / "04_token_census.txt"
+BAKEOFF_OUTPUT = PROCESSED_DIR / "04_bakeoff.md"
+
+# Which model won, written by the bake-off and read by everything after it.
+#
+# A constant edited by hand after reading a table would let the store be built
+# with a model the measurement never chose, and nothing would raise. Making the
+# winner an artifact on disk means the store can refuse to build until the
+# bake-off has actually run, the same way golden.py refuses to verify a set
+# whose chunk file is missing.
+BAKEOFF_DECISION = PROCESSED_DIR / "04_bakeoff_decision.json"

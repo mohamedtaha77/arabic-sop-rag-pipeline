@@ -13,3 +13,25 @@ easyocr==1.7.2
 # build instead for roughly an 8x speedup:
 #   pip install --force-reinstall torch torchvision \
 #       --index-url https://download.pytorch.org/whl/cu126
+
+# Embedding models for stage 6's bake-off, BAAI/bge-m3 against
+# intfloat/multilingual-e5-large. Both load through this rather than
+# sentence-transformers, so pooling is written out in embedder.py instead of
+# hidden inside a wrapper: the one asymmetry that could silently decide the
+# bake-off (e5 needs "query: "/"passage: " prefixes, BGE-M3 does not) has to
+# stay visible in the source that runs it. Pinned to 4.46.3 rather than the
+# 5.x release this project started on: the newer release's rewritten weight
+# loading path was one of several suspects chased down while BGE-M3's
+# pickle checkpoint crashed intermittently, and this older, mature release
+# was kept once the real fix, process isolation, made the version change
+# moot to verify either way.
+transformers==4.46.3
+
+# BGE-M3's sparse head, sparse_linear.pt, is not part of the dense encoder's
+# own weights and is fetched with this directly, hf_hub_download, rather
+# than through transformers' own loading path.
+huggingface_hub==0.36.2
+
+# Local vector store, file mode, no Docker. One collection per context
+# variant.
+qdrant-client==1.19.0

@@ -11,8 +11,8 @@ their accuracy.
 
 ## Status
 
-Ingestion, chunking, the local model layer, and context prefixes are
-complete. Later stages are in progress.
+Ingestion, chunking, the local model layer, context prefixes, the golden set,
+embedding and the vector store are complete. Later stages are in progress.
 
 | Stage | Status | Output |
 |---|---|---|
@@ -20,8 +20,9 @@ complete. Later stages are in progress.
 | Chunking | done | 357 chunks with section paths, actors and row provenance |
 | Local model layer | done | tokens, latency and a per-step cost table for every call |
 | Context prefixes | done | three chunk sets, none, template and LLM-generated, for the Contextual Retrieval comparison |
-| Embedding | not started | vectors from a multilingual model |
-| Vector store | not started | searchable index |
+| Golden set | done | 20 Arabic questions with reference answers and gold chunk ids, read off rendered pages by hand |
+| Embedding | done | BAAI/bge-m3, settled against intfloat/multilingual-e5-large on the golden set |
+| Vector store | done | three Qdrant collections, dense and sparse, verified against a brute-force ranking |
 | Retrieval | not started | hybrid BM25 and vector, with rank fusion |
 | Generation | not started | grounded answers with version-aware citations |
 | Evaluation | not started | accuracy against a labelled question set |
@@ -198,6 +199,20 @@ pip install --force-reinstall torch torchvision --index-url https://download.pyt
 python -c "import torch; print(torch.cuda.is_available())"
 ```
 
+### Embedding models and the vector store
+
+`BAAI/bge-m3` and `intfloat/multilingual-e5-large` download from
+HuggingFace on first use, about 4.5 GB combined, public weights rather than
+corpus data:
+
+```powershell
+$env:HF_HOME = "E:\hf"     # weights are a few GB; point somewhere with room
+```
+
+Qdrant runs embedded, local file mode, no server and no Docker: nothing
+further to install. `data/qdrant/` and `data/embeddings/` are gitignored,
+since a committed vector index would be the corpus in another form.
+
 ### The local model endpoint
 
 Generation, routing and evaluation all run against a local OpenAI-compatible
@@ -242,6 +257,13 @@ python cli.py layout       # tables and prose from OCR plus page geometry
 python cli.py chunk        # split the layout output into retrievable chunks
 python cli.py llm          # measure the local model endpoint
 python cli.py context      # build the three context-prefix chunk sets
+python cli.py golden       # verify the golden set and report coverage
+python cli.py embed --tokens    # real token counts, both models, no vectors
+python cli.py embed --bakeoff   # score both models, write the decision
+python cli.py embed             # embed the winner over all three variants
+python cli.py store --probe     # check Qdrant local mode for sparse support
+python cli.py store             # build and verify the three collections
+python cli.py store --browse    # a local, offline page for looking at what got stored
 ```
 
 Run `textlayer` first. It is cheap, and it populates the version metadata the
@@ -395,24 +417,77 @@ blended into the others.
 Both generated variants are recoverable back to `02_chunks.json`'s original
 text by construction, and the none variant is byte-identical to it. Nothing
 here decides whether prefixing helps; that is the embedding and evaluation
-stages' question to answer against a golden set that does not exist yet.
+stages' question to answer against the golden set covered next.
+
+## Golden set
+
+Every stage before this one produces something that can only be checked
+against itself: a table reconstruction against its own gates, three context
+variants against one another. The golden set is the one anchor outside all
+of that. `data/golden/golden_set.json` holds 20 Arabic questions with
+reference answers and gold chunk ids, established by rendering the source
+pages at high resolution and reading them directly, the same method that
+produced ingestion's 44% against 97% fidelity figure. No model is called
+anywhere in this stage.
+
+The set covers both correctness and refusal. Most questions are answerable
+from the corpus and carry the chunk ids a correct retriever has to return.
+Two are not: one is entirely outside the corpus's domain and should be
+refused before retrieval runs at all, and one is in domain but only returns
+plausible, related, non-answering chunks, which a system has to catch
+downstream rather than reject outright. A question one carried turn removed
+from its context is included as well, since resolving it correctly depends
+on state the harness has to carry forward rather than something visible in
+the question text alone.
+
+Eight checks run against the finished set before it is trusted: every gold
+and distractor chunk id has to resolve identically across the base chunk
+file and all three context variants, every quoted piece of supporting
+evidence has to be a real substring of the chunk it names, an answerable
+question has to carry at least one gold chunk and a refused one none, and
+the whole set is bound by a content hash to the exact chunk build it was
+read against, so a later re-chunk cannot silently invalidate it without
+being noticed.
+
+## Embedding
+
+Two multilingual candidates, `BAAI/bge-m3` and
+`intfloat/multilingual-e5-large`, scored against the golden set's 18
+answerable questions before either one embeds the corpus for real: Recall@10
+and MRR@10, both models over all three context variants, decided by a paired
+bootstrap on the unconfounded none column rather than by a bare point
+estimate from 18 questions. The two models tied closely enough that neither
+95% CI excluded zero; BGE-M3 took the decision on the architectural
+tie-break the rule named in advance, one model producing dense and learned
+sparse vectors together, never on the numbers themselves.
+
+The template context variant clearly outperformed both no prefix and the
+LLM-generated prefix for both candidates, the first real answer to the
+question Contextual Retrieval was built to ask.
+
+Chunk size, measured in characters since chunking, was checked against both
+models' real tokenizers: 3.55 to 3.57 characters per Arabic token, close
+enough to the 3-4 assumed that nothing upstream needed revisiting.
+e5-large's 512-token cap silently truncates about 1% of the corpus, named by
+chunk id rather than smoothed into a percentage; BGE-M3's 8,192-token cap is
+never approached.
+
+## Vector store
+
+Qdrant, local file mode, one collection per context variant, built with the
+winning model and verified against a brute-force cosine ranking computed
+independently of the store, since a wrong distance metric or a mis-mapped
+payload would otherwise present itself as a retrieval result rather than a
+store bug. BGE-M3's learned sparse vectors are written alongside the dense
+ones, once the local store was confirmed to accept them by creating a real
+collection rather than trusted to a changelog.
 
 ## Planned design decisions
-
-The embedding model has to be multilingual. The common tutorial default,
-`all-MiniLM-L6-v2`, is English only and produces near-useless vectors for this
-corpus. Candidates are `multilingual-e5`, `paraphrase-multilingual-mpnet`, and
-`bge-m3`, to be benchmarked on the real documents.
 
 Retrieval will be hybrid rather than vector only. Exact role names, rule numbers,
 and form codes are lexical matching problems that embeddings blur and BM25
 handles precisely. Vector-only retrieval performs acceptably in casual testing
 and fails on exactly the questions this corpus exists to answer.
-
-Chunk size is currently measured in characters, standing in for tokens at
-roughly three to four characters per Arabic token. The embedding model's own
-tokenizer should settle it, and the largest chunk at 2,903 characters needs
-checking against a real token count before anything is indexed.
 
 The manuals cross-reference governing policies that are not part of the corpus,
 including a procurement policy and a delegation of authority document. Queries

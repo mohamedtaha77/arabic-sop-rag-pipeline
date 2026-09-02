@@ -4,6 +4,10 @@ data/raw/
 data/processed/
 data/ocr_cache/
 data/llm_cache/
+data/golden/
+data/embeddings/
+data/qdrant/
+data/qdrant_browser.html
 
 # Private working notes, not part of the published project.
 LEARNING/
