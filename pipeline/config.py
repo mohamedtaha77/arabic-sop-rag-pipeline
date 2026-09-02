@@ -17,6 +17,27 @@ LAYOUT_OUTPUT = PROCESSED_DIR / "01_documents_layout.json"
 
 CHUNKS_OUTPUT = PROCESSED_DIR / "02_chunks.json"
 
+# Stage 4's three chunk sets, one per context-prefix strategy. The comparison
+# needs all three: without the no-prefix baseline it can say which prefix wins
+# but not whether prefixing helps at all.
+#
+# Three files rather than one keyed artifact, so each is a plain chunk list
+# that chunk.load_chunks reads unchanged and stage 6 loops over the three paths
+# uniformly. The baseline is a copy of CHUNKS_OUTPUT and is written anyway: a
+# baseline stage 6 has to reach for differently is one that can drift from the
+# other two without anything noticing.
+CONTEXT_VARIANTS = ("none", "template", "llm")
+
+CONTEXT_OUTPUTS = {
+    name: PROCESSED_DIR / f"03_chunks_{name}.json" for name in CONTEXT_VARIANTS
+}
+
+# Prefixes written out for reading by eye. The only check on whether a
+# generated prefix is true rather than merely well-formed, and a file rather
+# than console output for the reason probe.py gives: a Windows console is
+# cp1252 and would raise on the first Arabic letter, then reverse the rest.
+CONTEXT_SAMPLES_OUTPUT = PROCESSED_DIR / "03_context_samples.txt"
+
 # Page render resolution for OCR. 72 DPI (the PDF default) loses the dots that
 # distinguish ب ت ث ن; 600 DPI quadruples runtime for no measured accuracy gain.
 RENDER_DPI = 300

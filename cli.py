@@ -6,6 +6,7 @@
     python cli.py compare       score the two routes against each other
     python cli.py chunk         split the layout output into retrievable chunks
     python cli.py llm           measure the local model endpoint
+    python cli.py context       build the three context-prefix chunk sets
 """
 
 from __future__ import annotations
@@ -13,7 +14,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from pipeline.config import RENDER_DPI
+from pipeline.config import CONTEXT_VARIANTS, RENDER_DPI
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -45,6 +46,20 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("llm", help="measure the local model endpoint")
 
+    context_parser = sub.add_parser(
+        "context", help="build the three context-prefix chunk sets"
+    )
+    context_parser.add_argument(
+        "--variant", action="append", choices=list(CONTEXT_VARIANTS),
+        help="build only this variant; repeatable. Default: all three.",
+    )
+    context_parser.add_argument(
+        "--sample", type=int, default=None,
+        help="generate the llm prefix for a stratified sample of this many "
+             "chunks and write it for reading, without building or gating "
+             "the full llm variant",
+    )
+
     args = parser.parse_args(argv)
 
     if args.command == "textlayer":
@@ -66,6 +81,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "llm":
         from pipeline.llm import probe
         return probe.run()
+
+    if args.command == "context":
+        from pipeline.chunking import context
+        if args.sample is not None:
+            return context.run_sample(args.sample)
+        variants = tuple(args.variant) if args.variant else CONTEXT_VARIANTS
+        return context.run(variants=variants)
 
     from pipeline.ingestion import compare
     compare.run()

@@ -166,6 +166,16 @@ KNOWN_OCR_MISREADS = {
     # Expanded back into two words, so the space is restored with the letter.
     "البيدمن": "البريد من",
     "الوادمن": "الوارد من",
+
+    # The Assets manual's own cover title, page 1, confirmed by rendering the
+    # page at 250 DPI and reading it: "دليل إجراءات وحدة الموجودات وعمليات
+    # المستودعات". Each of the three forms below occurs exactly once in the
+    # whole corpus, on that one page, in both extraction routes, and none of
+    # the three correct forms ever collides with it elsewhere; stage 4 needs
+    # this title read correctly for the template context prefix.
+    "إجدءات": "إجراءات",       # ر misread as د, same class as الإجداءات above
+    "لوجودات": "الموجودات",     # ال and م both dropped from الموجودات
+    "الستودعات": "المستودعات",  # م dropped from المستودعات
 }
 
 # Arabic block. A key is a correction only when what surrounds it is not more

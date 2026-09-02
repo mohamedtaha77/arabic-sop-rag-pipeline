@@ -11,13 +11,15 @@ their accuracy.
 
 ## Status
 
-Ingestion and chunking are complete. Later stages are in progress.
+Ingestion, chunking, the local model layer, and context prefixes are
+complete. Later stages are in progress.
 
 | Stage | Status | Output |
 |---|---|---|
 | Ingestion | done | `Document` objects with provenance and quality metadata |
 | Chunking | done | 357 chunks with section paths, actors and row provenance |
 | Local model layer | done | tokens, latency and a per-step cost table for every call |
+| Context prefixes | done | three chunk sets, none, template and LLM-generated, for the Contextual Retrieval comparison |
 | Embedding | not started | vectors from a multilingual model |
 | Vector store | not started | searchable index |
 | Retrieval | not started | hybrid BM25 and vector, with rank fusion |
@@ -239,6 +241,7 @@ python cli.py compare      # score both routes against ground truth
 python cli.py layout       # tables and prose from OCR plus page geometry
 python cli.py chunk        # split the layout output into retrievable chunks
 python cli.py llm          # measure the local model endpoint
+python cli.py context      # build the three context-prefix chunk sets
 ```
 
 Run `textlayer` first. It is cheap, and it populates the version metadata the
@@ -278,6 +281,7 @@ pipeline/
     tables.py                   a table's five kinds and their chunks
     prose.py                    running text, split on numbered rules
     chunker.py                  orchestration and the three gates
+    context.py                  three context-prefix variants, none/template/llm
   llm/
     client.py                   one call to the local endpoint, and back
     cache.py                    how a call is not made twice
@@ -352,6 +356,46 @@ Responses are cached to disk by a hash of everything that changes the answer.
 A cache hit replays the original token count and latency and is flagged as
 cached, rather than reporting zero. Reporting zero would make every re-run show
 a cost collapse that never happened.
+
+## Context prefixes
+
+Contextual Retrieval is a claim about retrieval, and the only way to test it
+honestly is against a baseline that has no prefix at all. `pipeline/chunking/context.py`
+builds three parallel chunk sets from `02_chunks.json`: none, a deterministic
+template assembled from metadata already in the chunks, and one an LLM writes
+after reading each chunk in the context of its own section.
+
+| Variant | Total chars | Prefix chars, median |
+|---|---|---|
+| none | 141,276 | n/a |
+| template | 194,804 | 150 |
+| llm | 201,207 | 156 |
+
+The template prefix names the manual, the full section path, the page, the
+version and the issue date, and adds the actor or unit only when the chunk's
+own text does not already carry them. The LLM prefix is generated from a
+manual-level outline plus the chunk's whole section, not the whole document,
+since a manual runs past the 8,192 context and an over-long prompt is cut in
+silence rather than refused. Chunks are grouped by section when the calls are
+made, so consecutive calls share an identical prompt prefix a KV cache can
+reuse.
+
+A prefix is rejected and re-asked once, then falls back to the template, when
+it is empty, off length, mostly off-script, a verbatim or near-verbatim copy
+of the chunk, or opens with a preamble. The one check that took two full runs
+to get right: token overlap alone cannot tell a lazy copy from a genuine
+synthesis in a fixed-register administrative corpus, where a correct summary
+of a long procedure and a copy of a short one can both legitimately reuse
+100% of their words. What separates them is compression, so a prefix is only
+rejected on overlap when it is also not meaningfully shorter than the chunk
+it describes. Final result: 281 of 357 prefixes generated cleanly, 49 needed
+one re-ask, 27 fell back to the template, all recorded and none silently
+blended into the others.
+
+Both generated variants are recoverable back to `02_chunks.json`'s original
+text by construction, and the none variant is byte-identical to it. Nothing
+here decides whether prefixing helps; that is the embedding and evaluation
+stages' question to answer against a golden set that does not exist yet.
 
 ## Planned design decisions
 

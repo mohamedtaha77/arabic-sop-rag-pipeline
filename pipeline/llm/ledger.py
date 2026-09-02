@@ -60,6 +60,7 @@ STEPS = (
     "Final generation",
     "Grounding guard",
     "Presenter",
+    "Contextualisation",
 )
 
 SPEC_STEPS = frozenset({
@@ -72,6 +73,14 @@ SPEC_STEPS = frozenset({
 # latency the scarce resource, so a cross-encoder costing two seconds a query
 # belongs in the table rather than being invisible because it is free.
 LOCAL_STEPS = frozenset({"Reranking", "Grounding guard"})
+
+# Steps paid once when the index is built, never per question. Stage 4's ~357
+# contextualisation calls are the first of these: every per-question ledger
+# carries the row, correctly reading Executed? No, because the cost belongs to
+# the index rather than to any answer. verify() reads this set so a ledger that
+# only ever does build work is not held to the "a question was answered" rule
+# below, which is the rule for query-time ledgers, not index-time ones.
+BUILD_STEPS = frozenset({"Contextualisation"})
 
 
 @dataclass
@@ -207,7 +216,12 @@ class Ledger:
         # The task states final generation always executes. A ledger without it
         # describes a question that was never answered, and a cost table for an
         # answer that does not exist is not a cheap run, it is a bug.
-        if not any(e.step == "Final generation" for e in self.entries):
+        #
+        # Exempted when every entry is a build step: stage 4's ledger builds an
+        # index and answers no question, so holding it to a rule written for
+        # query-time ledgers would fail a run that never went wrong.
+        query_time = any(e.step not in BUILD_STEPS for e in self.entries)
+        if query_time and not any(e.step == "Final generation" for e in self.entries):
             failures.append("Final generation never ran")
 
         for entry in self.entries:
