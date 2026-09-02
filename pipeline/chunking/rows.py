@@ -10,7 +10,7 @@ cover titles, approver names, account lines, and step text that lost its number
 cell. Reading cell count as meaning produces section paths that look right on
 one manual and fill another's with fragments of step prose.
 
-This module sees one row and nothing else — no page, no table, no document.
+This module sees one row and nothing else: no page, no table, no document.
 That limit costs something real. An accounting-entry title and an orphaned step
 continuation are both a single cell of ordinary Arabic, and only the
 surrounding table tells them apart. So both come back as ``continuation`` and

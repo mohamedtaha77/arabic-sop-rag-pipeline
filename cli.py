@@ -5,6 +5,7 @@
     python cli.py layout        extract tables and prose via OCR plus geometry
     python cli.py compare       score the two routes against each other
     python cli.py chunk         split the layout output into retrievable chunks
+    python cli.py llm           measure the local model endpoint
 """
 
 from __future__ import annotations
@@ -42,6 +43,8 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("chunk", help="split the layout output into chunks")
 
+    sub.add_parser("llm", help="measure the local model endpoint")
+
     args = parser.parse_args(argv)
 
     if args.command == "textlayer":
@@ -59,6 +62,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "chunk":
         from pipeline.chunking import chunker
         return 0 if chunker.run() else 1
+
+    if args.command == "llm":
+        from pipeline.llm import probe
+        return probe.run()
 
     from pipeline.ingestion import compare
     compare.run()

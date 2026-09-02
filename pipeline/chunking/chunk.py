@@ -4,7 +4,7 @@ Ingestion's unit is the page, the best citation anchor a PDF offers. Retrieval
 needs something smaller: a page here holds a whole procedure, and embedding it
 whole dilutes the one step a question asks about.
 
-Chunk mirrors Document — text plus a metadata dict — so downstream stages learn
+Chunk mirrors Document, text plus a metadata dict, so downstream stages learn
 one shape rather than two, and never need to know which of the five builders
 produced a given chunk. Only ``chunk_type`` says which.
 
@@ -51,8 +51,8 @@ class Chunk:
 
     Metadata keys, documented rather than enforced for the reason Document
     gives: a dataclass with fifteen optional fields reads worse than a dict
-    with a stated contract, and the check that matters — no row lost or
-    duplicated — spans the whole corpus, which no per-object validator sees.
+    with a stated contract, and the check that matters (no row lost or
+    duplicated) spans the whole corpus, which no per-object validator sees.
 
         chunk_id            stable, readable identifier; see make_chunk_id
         source              PDF filename, carried through from ingestion

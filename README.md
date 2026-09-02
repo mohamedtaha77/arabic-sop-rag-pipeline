@@ -17,6 +17,7 @@ Ingestion and chunking are complete. Later stages are in progress.
 |---|---|---|
 | Ingestion | done | `Document` objects with provenance and quality metadata |
 | Chunking | done | 357 chunks with section paths, actors and row provenance |
+| Local model layer | done | tokens, latency and a per-step cost table for every call |
 | Embedding | not started | vectors from a multilingual model |
 | Vector store | not started | searchable index |
 | Retrieval | not started | hybrid BM25 and vector, with rank fusion |
@@ -79,9 +80,9 @@ pages, so the OCR route borrows its version metadata from the text layer route.
 
 One manual's header labels are themselves corrupted, truncated mid-word, which
 left all three of its fields empty for a while. The digits beside them were
-correct throughout — digits are the one thing a broken glyph table does not
-damage — so the version is recovered by anchoring on the surviving part of the
-label. Its two dates truncate to the same prefix and cannot be told apart that
+correct throughout, because digits are the one thing a broken glyph table does
+not damage, so the version is recovered by anchoring on the surviving part of
+the label. Its two dates truncate to the same prefix and cannot be told apart that
 way, so those come from the header table's geometry instead.
 
 The text layer route also runs 200 times faster and produces the quality
@@ -195,6 +196,38 @@ pip install --force-reinstall torch torchvision --index-url https://download.pyt
 python -c "import torch; print(torch.cuda.is_available())"
 ```
 
+### The local model endpoint
+
+Generation, routing and evaluation all run against a local OpenAI-compatible
+endpoint. Nothing in `requirements.txt` covers it, because it is a server rather
+than a Python package. Ollama is what this was built against; llama.cpp's server
+speaks the same dialect and needs only a different `LLM_BASE_URL`.
+
+Install Ollama, then start it with two settings that matter:
+
+```powershell
+$env:OLLAMA_MODELS = "E:\ollama\models"     # models are ~2 GB each
+$env:OLLAMA_CONTEXT_LENGTH = "8192"          # see below
+ollama serve
+```
+
+`OLLAMA_CONTEXT_LENGTH` is not optional. The default is smaller than the
+prompts this pipeline sends, and an over-long prompt is truncated in
+silence. The model answers fluently from half the retrieved evidence, and
+nothing appears in the logs. `python cli.py llm` measures the context the server
+actually serves and fails if it is short of what `pipeline/config.py` asks for.
+
+Then pull the two models named in `pipeline/config.py`:
+
+```powershell
+ollama pull qwen2.5:3b-instruct-q4_K_M      # generator
+ollama pull llama3.2:3b-instruct-q4_K_M     # judge
+```
+
+Two model families rather than one. The judge has to differ from the generator,
+or it grades its own work generously, and sharing a quantisation is not
+differing. `python cli.py llm` refuses to pass if the two tags are equal.
+
 ## Usage
 
 Place PDFs in `data/raw/`, then:
@@ -205,6 +238,7 @@ python cli.py ocr          # rendering and OCR, cached per page
 python cli.py compare      # score both routes against ground truth
 python cli.py layout       # tables and prose from OCR plus page geometry
 python cli.py chunk        # split the layout output into retrievable chunks
+python cli.py llm          # measure the local model endpoint
 ```
 
 Run `textlayer` first. It is cheap, and it populates the version metadata the
@@ -244,10 +278,17 @@ pipeline/
     tables.py                   a table's five kinds and their chunks
     prose.py                    running text, split on numbered rules
     chunker.py                  orchestration and the three gates
+  llm/
+    client.py                   one call to the local endpoint, and back
+    cache.py                    how a call is not made twice
+    pricing.py                  what a free call would have cost
+    ledger.py                   which steps ran, and the cost table
+    probe.py                    measures the endpoint on this machine
 data/
   raw/                          source PDFs, not tracked
   processed/                    stage outputs, not tracked
   ocr_cache/                    per page OCR results, not tracked
+  llm_cache/                    per call model results, not tracked
 ```
 
 ## Text normalisation
@@ -269,6 +310,48 @@ shape. Some producers store the shapes instead, as codepoints in U+FB50 to
 U+FEFF. Those are absent from embedding tokenizers and never match a normally
 typed query, so without normalisation about a quarter of one manual is
 unsearchable.
+
+## The local model layer
+
+Every later stage spends model calls, so the wrapper that makes them is built
+before the stages that need it rather than retrofitted afterwards. It records
+step, model, input and output tokens, latency and cost for every call, and
+renders the per-technique table the evaluation needs.
+
+The row schema is declared up front rather than collected from whatever ran. A
+technique that never fired prints as a row reading `No` against zeros, because
+which techniques were *skipped* is exactly what an ablation has to show. A step
+name outside the schema raises rather than quietly dropping a row.
+
+Local calls cost nothing, and a table of zeros distinguishes nothing. So token
+counts are real, measured by the server, and priced against a published hosted
+rate card to give the comparison a scale. Every cost figure is a counterfactual
+and is labelled as one. Latency is not: running locally makes it the scarce
+resource, so it sits beside cost in the table, and CPU-only steps such as the
+reranker are recorded with real seconds against zero tokens.
+
+Two model families rather than one, because a judge sharing weights with the
+generator grades its own work generously. Measured on an RTX 3050 Ti: a 3B at
+Q4_K_M with an 8,192 context fits entirely in the 4 GB card, 2,207 MB of it,
+which is why a larger model is not used: a 7B Q4 exceeds the card before its KV
+cache, and would run partly on a host with 11.8 GB of RAM.
+
+Three failures are refused rather than returned, all of them cases where
+plausible output is worse than an error:
+
+- a completion cut off at `max_tokens`, which reads like a finished answer
+- a response with no usage block, which would enter the cost table as free
+- an unreachable server or missing model, each reporting the command that fixes it
+
+A fourth cannot be refused and is measured instead. A prompt longer than the
+context is not rejected: the server silently keeps about half and answers
+fluently from it. Retrieval stages have to budget their own prompt size, since
+nothing downstream will say no.
+
+Responses are cached to disk by a hash of everything that changes the answer.
+A cache hit replays the original token count and latency and is flagged as
+cached, rather than reporting zero. Reporting zero would make every re-run show
+a cost collapse that never happened.
 
 ## Planned design decisions
 

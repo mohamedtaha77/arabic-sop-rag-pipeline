@@ -14,7 +14,7 @@ table rows loses 17 procedures; reading only prose loses nearly all of the
 other two manuals'. So this tracker reads both into one stack.
 
 When content arrives before any anchor, the path is UNCLASSIFIED rather than an
-invented root — the same choice metadata.py makes in recording a missing
+invented root, the same choice metadata.py makes in recording a missing
 version field as an explicit None. A fabricated path would satisfy the gate and
 hide the gap; a marked one is countable, and chunker.py counts it.
 """
@@ -107,7 +107,7 @@ class SectionTracker:
     """Heading state, carried down a document one page at a time.
 
     State belongs to the document, not the table. A procedure table on page 16
-    carries no anchor of its own — الإجراءات was announced on page 8 and holds
+    carries no anchor of its own: الإجراءات was announced on page 8 and holds
     until something replaces it.
 
     Setting a level clears everything below it. A new anchor drops the heading

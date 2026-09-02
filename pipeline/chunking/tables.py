@@ -167,8 +167,8 @@ def _approval_chunk(rows: list[list[str]], meta: dict[str, Any]) -> list[Chunk]:
     """The signature page, kept whole.
 
     Seven one-cell rows of job titles under a four-column header. Split per
-    row, each chunk holds one job title and no indication of what was approved
-    — worse than useless, because those same titles are real answers elsewhere.
+    row, each chunk holds one job title and no indication of what was approved.
+    That is worse than useless: those same titles are real answers elsewhere.
     """
     body = _join([" | ".join(row) for row in rows if row])
     if not body:

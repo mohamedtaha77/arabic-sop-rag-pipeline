@@ -1,7 +1,7 @@
 """Running text into chunks.
 
 The small path. After layout.py lifts the tables out, 20,524 characters of
-prose remain against 110,793 in table cells — prose is a tenth of this corpus,
+prose remain against 110,793 in table cells. Prose is a tenth of this corpus,
 and 15,994 characters of it survive heading removal to be chunked here.
 
 It is not a tenth of the value. Every general rule the manuals state lives in
