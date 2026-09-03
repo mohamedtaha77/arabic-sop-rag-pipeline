@@ -19,11 +19,15 @@ Recall@10 number three modules from now.
 
 from __future__ import annotations
 
+import gc
 import statistics
+import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, TypeVar
 
 from transformers import AutoConfig, AutoTokenizer
+
+_T = TypeVar("_T")
 
 from ..chunking.chunk import Chunk, load_chunks
 from ..config import CONTEXT_OUTPUTS, EMBED_MODELS, TOKEN_CENSUS_OUTPUT
@@ -38,11 +42,64 @@ _tokenizer_cache: dict[str, Any] = {}
 _max_length_cache: dict[str, int] = {}
 
 
+def load_with_retry(
+    load_fn: Callable[[], _T], label: str,
+    attempts: int = 5, delay_s: float = 4.0,
+) -> _T:
+    """Retry a HuggingFace load through a transient MemoryError.
+
+    Found during stage 8, not stage 6: loading BGE-M3's ~17 MB
+    tokenizer.json inside a process that already has torch and
+    qdrant_client imported intermittently raised MemoryError with
+    several GB of free physical and virtual memory still reported at
+    the OS level. Isolated directly, not guessed at, across several
+    throwaway probes: the cached tokenizer.json read and sha256-verified
+    correctly outside this process; the identical
+    open(path, encoding="utf-8") plus json.load() call transformers
+    itself makes succeeded instantly in a fresh interpreter; and the
+    failure reproduces with or without a QdrantClient ever opened, so
+    it is not specifically about this project's store. What is left is
+    allocator fragmentation somewhere in this specific process, and it
+    is genuinely intermittent: the exact same call has both failed and
+    succeeded from one fresh process to the next with no controlled
+    variable changed, tracked in LEARNING/router.md rather than solved
+    here.
+
+    Honest limit of this mitigation: gc.collect() only frees Python-level
+    cyclic garbage, and does not defragment torch's or tokenizers' own
+    native allocators, so an in-process retry sometimes rides out a
+    short blip and sometimes does not, observed both ways while building
+    this. A fresh process has reliably succeeded every time this was
+    manually retried, which this function cannot offer without
+    subprocess isolation per query, the cost QUERY_DEVICE = "cpu" was
+    chosen to avoid. When every attempt here still fails, the honest
+    next step is what embedding/run.py's own _SUBPROCESS_RETRIES message
+    already models: report it as real, and rerun the command.
+    """
+    last_error: MemoryError | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return load_fn()
+        except MemoryError as error:
+            last_error = error
+            gc.collect()
+            if attempt < attempts:
+                time.sleep(delay_s)
+    raise MemoryError(
+        f"{label} failed after {attempts} attempts under retry, most "
+        f"recently: {last_error}. See load_with_retry's own docstring "
+        f"in tokens.py for what this was measured to be and not be."
+    ) from last_error
+
+
 def get_tokenizer(model_key: str):
     """Load and cache one model's tokenizer, by its short name in EMBED_MODELS."""
     if model_key not in _tokenizer_cache:
         model_id = EMBED_MODELS[model_key]
-        _tokenizer_cache[model_key] = AutoTokenizer.from_pretrained(model_id)
+        _tokenizer_cache[model_key] = load_with_retry(
+            lambda: AutoTokenizer.from_pretrained(model_id),
+            f"tokenizer for {model_key}",
+        )
     return _tokenizer_cache[model_key]
 
 

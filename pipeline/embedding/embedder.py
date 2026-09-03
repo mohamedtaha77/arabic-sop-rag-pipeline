@@ -42,7 +42,7 @@ import torch
 import numpy as np
 
 from ..config import EMBED_BATCH_SIZE, EMBED_MODELS, EMBEDDING_CACHE_DIR
-from .tokens import get_tokenizer, max_content_length
+from .tokens import get_tokenizer, load_with_retry, max_content_length
 
 Kind = str  # "query" or "passage"
 
@@ -155,7 +155,12 @@ def _load_model(model_key: str, device: str | None = None):
     if cache_key not in _model_cache:
         from transformers import AutoModel
 
-        model = AutoModel.from_pretrained(EMBED_MODELS[model_key])
+        # load_with_retry: see tokens.py's own docstring for what this
+        # guards against, found during stage 8 against this exact call.
+        model = load_with_retry(
+            lambda: AutoModel.from_pretrained(EMBED_MODELS[model_key]),
+            f"model weights for {model_key}",
+        )
         if dtype is not torch.float32:
             model = model.to(dtype=dtype)
         model = model.to(resolved_device)

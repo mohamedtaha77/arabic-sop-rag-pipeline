@@ -119,3 +119,22 @@ class BM25Index:
             key=lambda i: (-scores[i], self.chunk_ids[i]),
         )
         return [self.chunk_ids[i] for i in order]
+
+    def rank_scored(self, question: str) -> list[tuple[str, float]]:
+        """rank(), keeping each chunk id's own BM25 score.
+
+        Added for stage 8: retriever.retrieve_scored's BM25 leg needs a
+        score alongside the id, and a Self-Query filter needs the full
+        357-row ranking to filter down from rather than a pre-truncated
+        one, since filtering after truncation could drop a chunk that
+        would have ranked inside the allowed subset's own top k. rank()
+        above is unchanged and stays what evaluate.py's grid and
+        retriever.retrieve both call.
+        """
+        query_tokens = self.tokenize(question)
+        scores = self.score(query_tokens)
+        order = sorted(
+            range(len(self.chunk_ids)),
+            key=lambda i: (-scores[i], self.chunk_ids[i]),
+        )
+        return [(self.chunk_ids[i], scores[i]) for i in order]

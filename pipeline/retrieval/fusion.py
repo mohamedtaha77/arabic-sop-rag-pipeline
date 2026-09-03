@@ -27,6 +27,42 @@ import numpy as np
 from ..config import MAX_PER_PAGE, MAX_PER_SOURCE, MMR_LAMBDA, RRF_K
 
 
+def reciprocal_rank_fusion_scored(
+    rankings: list[list[str]],
+    weights: list[float] | None = None,
+    k: int = RRF_K,
+) -> list[tuple[str, float]]:
+    """reciprocal_rank_fusion, keeping the fused score each chunk id earned
+    rather than discarding it at the end.
+
+    Each ranking contributes 1 / (k + rank) to every chunk id it contains,
+    rank starting at 1; a chunk absent from a ranking contributes nothing
+    from it rather than a penalty, which is what lets a chunk found by only
+    one leg still surface. weights scale a leg's whole contribution, used
+    by evaluate.py's grid to check whether any weighting recovers what
+    unweighted fusion costs, never tuned against the golden set beyond the
+    small values the plan names.
+
+    Added for stage 8: retriever.retrieve_scored and CRAG both need this
+    fused score as a confidence signal, flagged rank-derived rather than
+    absolute since it has no fixed scale the way a single leg's own cosine
+    or BM25 score does. reciprocal_rank_fusion below is unchanged and
+    stays the only function stage 6 and 7's already-gated code calls; this
+    is a strict superset of what it computes, not a replacement for it.
+    """
+    if weights is None:
+        weights = [1.0] * len(rankings)
+    if len(weights) != len(rankings):
+        raise ValueError("weights must have one entry per ranking")
+
+    scores: dict[str, float] = collections.defaultdict(float)
+    for ranking, weight in zip(rankings, weights):
+        for rank, chunk_id in enumerate(ranking, start=1):
+            scores[chunk_id] += weight / (k + rank)
+
+    return sorted(scores.items(), key=lambda item: (-item[1], item[0]))
+
+
 def reciprocal_rank_fusion(
     rankings: list[list[str]],
     weights: list[float] | None = None,
@@ -42,19 +78,9 @@ def reciprocal_rank_fusion(
     unweighted fusion costs, never tuned against the golden set beyond the
     small values the plan names.
     """
-    if weights is None:
-        weights = [1.0] * len(rankings)
-    if len(weights) != len(rankings):
-        raise ValueError("weights must have one entry per ranking")
-
-    scores: dict[str, float] = collections.defaultdict(float)
-    for ranking, weight in zip(rankings, weights):
-        for rank, chunk_id in enumerate(ranking, start=1):
-            scores[chunk_id] += weight / (k + rank)
-
     return [
         chunk_id for chunk_id, _ in
-        sorted(scores.items(), key=lambda item: (-item[1], item[0]))
+        reciprocal_rank_fusion_scored(rankings, weights, k)
     ]
 
 

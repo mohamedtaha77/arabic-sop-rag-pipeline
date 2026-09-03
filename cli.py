@@ -10,6 +10,9 @@
     python cli.py golden        verify the golden set and report coverage
     python cli.py embed         token census, the bake-off, or the embed run
     python cli.py store         the sparse-vector probe, build, or browse it
+    python cli.py retrieve      the retrieval grid, the device probe, or one query
+    python cli.py route         one question through the pre-gate and router
+    python cli.py techniques    one question through the full pipeline, or the reports
 """
 
 from __future__ import annotations
@@ -152,6 +155,40 @@ def main(argv: list[str] | None = None) -> int:
              "print the ranked chunk ids",
     )
 
+    route_parser = sub.add_parser(
+        "route", help="one question through the pre-gate and router"
+    )
+    route_group = route_parser.add_mutually_exclusive_group()
+    route_group.add_argument(
+        "--evaluate", action="store_true",
+        help="run every golden question through the pre-gate and router "
+             "in order, report route agreement, and write the router "
+             "report",
+    )
+    route_group.add_argument(
+        "question", nargs="?", default=None,
+        help="run one question through the pre-gate then the router, "
+             "and print the route decision",
+    )
+
+    techniques_parser = sub.add_parser(
+        "techniques",
+        help="the eight techniques: one question through the full "
+             "pipeline, or the router and technique reports",
+    )
+    techniques_group = techniques_parser.add_mutually_exclusive_group()
+    techniques_group.add_argument(
+        "--evaluate", action="store_true",
+        help="write the router report, the technique report, and the "
+             "reranking-default decision",
+    )
+    techniques_group.add_argument(
+        "question", nargs="?", default=None,
+        help="run one question through the pre-gate, the router, and "
+             "whichever techniques it selects, and print the retrieved "
+             "chunk ids and which techniques executed",
+    )
+
     args = parser.parse_args(argv)
 
     if args.command == "textlayer":
@@ -244,6 +281,58 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"{i}. {chunk_id}")
             return 0
         retrieve_parser.print_help()
+        return 1
+
+    if args.command == "route":
+        from pipeline.llm.ledger import Ledger
+        from pipeline.router import gate
+        from pipeline.router import router as router_module
+        if args.evaluate:
+            from pipeline.config import ROUTER_OUTPUT
+            lines = router_module.verify_against_golden()
+            ROUTER_OUTPUT.parent.mkdir(parents=True, exist_ok=True)
+            ROUTER_OUTPUT.write_text("\n".join(lines), encoding="utf-8")
+            print(lines[0])
+            print(f"written to {ROUTER_OUTPUT}")
+            return 0
+        if args.question:
+            decision = gate.check(args.question)
+            if decision is None:
+                decision = router_module.route(args.question, Ledger(label="cli-route"))
+            print(f"route: {decision.route}")
+            print(f"reason: {decision.reason}")
+            print(f"requested techniques: {list(decision.requested)}")
+            if decision.refusal_kind:
+                print(f"refusal_kind: {decision.refusal_kind}")
+            return 0
+        route_parser.print_help()
+        return 1
+
+    if args.command == "techniques":
+        if args.evaluate:
+            from pipeline.techniques import evaluate as techniques_evaluate
+            return 0 if techniques_evaluate.run() else 1
+        if args.question:
+            from pipeline.llm.ledger import Ledger
+            from pipeline.retrieval.retriever import open_shipping
+            from pipeline.techniques import rerank
+            from pipeline.techniques.run import answer
+            # warm_up() before open_shipping(): a single ad-hoc question
+            # could route to advanced_rag, which always reranks, and the
+            # route is not known until the router runs inside answer();
+            # see rerank.warm_up's own docstring for why this order is
+            # load-bearing rather than a style preference.
+            rerank.warm_up()
+            with open_shipping() as handle:
+                result = answer(args.question, Ledger(label="cli-techniques"), handle)
+            print(f"route: {result.decision.route}")
+            print(f"reason: {result.decision.reason}")
+            print(f"executed techniques: {list(result.executed)}")
+            print(f"retrieved chunk ids: {result.chunk_ids}")
+            if result.crag_refused:
+                print("CRAG refused: no confident answer found in the corpus")
+            return 0
+        techniques_parser.print_help()
         return 1
 
     from pipeline.ingestion import compare

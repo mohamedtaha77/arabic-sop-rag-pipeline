@@ -264,6 +264,12 @@ python cli.py embed             # embed the winner over all three variants
 python cli.py store --probe     # check Qdrant local mode for sparse support
 python cli.py store             # build and verify the three collections
 python cli.py store --browse    # a local, offline page for looking at what got stored
+python cli.py retrieve --evaluate     # the retrieval grid, writes the shipping decision
+python cli.py retrieve "..."          # one question through the shipping configuration
+python cli.py route --evaluate        # route agreement against the golden set
+python cli.py route "..."             # one question through the pre-gate and router
+python cli.py techniques --evaluate   # the router and technique reports, the decision
+python cli.py techniques "..."        # one question through the full pipeline
 ```
 
 Run `textlayer` first. It is cheap, and it populates the version metadata the
@@ -310,11 +316,52 @@ pipeline/
     pricing.py                  what a free call would have cost
     ledger.py                   which steps ran, and the cost table
     probe.py                    measures the endpoint on this machine
+  golden/
+    question.py                 the Question contract, page references
+    skeleton.py                 the 20 authored questions
+    worksheet.py                renders pages for a person to read
+    golden.py                   the eight gates that check what was written
+  embedding/
+    tokens.py                   real token counts, before a vector exists
+    embedder.py                 pooling, prefixes, the model cache
+    sparse.py                   BGE-M3's own learned sparse head
+    metrics.py                  retrieval metrics, the bootstrap tie-break
+    bakeoff.py                  the worker: one model, one subprocess
+    run.py                      the orchestrator: spawns bakeoff.py per model
+    visualize.py                a local, offline 2D projection
+  store/
+    qdrant.py                   builds and verifies the three collections
+    probe.py                    checks local-mode sparse vector support
+    browse.py                   a local, offline page for what got stored
+  retrieval/
+    text.py                     Arabic tokenisation for the BM25 leg
+    bm25.py                     Okapi BM25, written out rather than imported
+    fusion.py                   Reciprocal Rank Fusion, then diversity caps
+    retriever.py                the query-time entry point, and the scored one
+    evaluate.py                 the grid that decided the shipping config
+  router/
+    schema.py                   RouteDecision, TechniqueSet, the vocabulary
+    gate.py                     the deterministic, zero-cost pre-gate
+    router.py                   one structured call: route, scope, techniques
+  techniques/
+    run.py                      TechniqueSet dispatch, the QuestionRun record
+    rewrite.py                  resolve a vague or context-dependent question
+    multiquery.py                paraphrase, retrieve each, fuse
+    decompose.py                 split into sub-questions, retrieve, fuse
+    hyde.py                      retrieve with a hypothetical passage
+    selfquery.py                  a semantic query plus a metadata filter
+    rerank.py                    a cross-encoder, in its own worker process
+    compress.py                   verified extractive compression
+    crag.py                       grade retrieval, re-query once, or refuse
+    evaluate.py                   the router and technique reports
 data/
   raw/                          source PDFs, not tracked
   processed/                    stage outputs, not tracked
   ocr_cache/                    per page OCR results, not tracked
   llm_cache/                    per call model results, not tracked
+  golden/                       the golden set and its rendered pages
+  embeddings/, embeddings_sparse/   cached vectors, not tracked
+  qdrant/                       the local vector store, not tracked
 ```
 
 ## Text normalisation
@@ -513,6 +560,40 @@ vectors could load onto the same 4 GB card Ollama needs for generation,
 about 6x faster per query, but at roughly 1.1 GB of VRAM held for as long
 as the embedder stays resident. 178ms against a generation call timed out
 at 300 seconds is negligible; 1.1 GB against a 4 GB budget is not.
+
+## Router and techniques
+
+A deterministic, zero-cost pre-gate catches a greeting or a fragment
+before any model is called; everything else goes to one structured
+model call deciding `simple`, `basic_rag` or `advanced_rag`, whether
+the question is in scope at all, and which of five query-transformation
+techniques it shows a real signal for. Route agreement against the 20
+golden questions: 17/20, after three prompt revisions each kept only
+when measured to help. The single largest fix was not wording: deciding
+`in_scope` before `route` in the JSON schema, forcing that judgement
+first, corrected a case where a personal-finance question was being
+routed by surface shape rather than topic.
+
+Eight techniques, each independently switchable: Rewriting, Multi-Query,
+Decomposition, HyDE and Self-Query transform the query or narrow the
+searchable set before retrieval; Reranking, Compression and CRAG improve
+what retrieval already found. Reranking is forced on for every
+`advanced_rag` question, a decision measured rather than assumed: across
+all 18 answerable golden questions, reranking promotes 50 chunks into
+the top 10 from outside the unreranked top 10, chunks a bi-encoder alone
+ranked 11th to 20th. CRAG (grade retrieval, one corpus re-query on a
+miss, refuse if that misses too, the paper's own web-search fallback
+replaced since this is a closed domain) reliably catches the one
+question built to need it, but also over-refuses roughly half of the
+genuinely answerable ones, a measured precision limit of a 3B local
+judge model on this nuanced a task rather than a bug, three different
+grading prompts having been tried.
+
+Reranking runs in a dedicated worker subprocess, never in the same
+process as query-time embedding: loading two large XLM-R-family
+checkpoints together on this machine crashes, in both load orders,
+confirmed directly rather than assumed from the bake-off's own earlier
+finding of the same fault between two checkpoints in one process.
 
 ## Planned design decisions
 

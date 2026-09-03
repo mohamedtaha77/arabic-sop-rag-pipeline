@@ -2,6 +2,29 @@
 
 from __future__ import annotations
 
+import os
+
+# Set before transformers or huggingface_hub is ever imported anywhere in
+# the process, which this achieves by being the first thing this module
+# does and this module being the first import of nearly every entry
+# point. Found during stage 8: transformers spawns a background thread on
+# a HuggingFace model load to check the Hub API for a safetensors
+# conversion PR, a live network call, racing against the main thread's
+# own model construction from the very same checkpoint. faulthandler
+# caught it directly: one thread blocked in
+# safetensors_conversion.auto_conversion's HTTP request, the other inside
+# torch's own nn.Linear construction, at the moment of a real crash. This
+# is a genuine race condition, not the memory pressure it first looked
+# like, and it is also pointless: every model this project uses is
+# already downloaded and cached locally, the corpus this pipeline serves
+# is internal-use bank material that runs entirely offline by design (see
+# the README), and a query-time embed has no business reaching the
+# network at all. Offline mode removes the thread and the race together;
+# repeated loads after this was set never reproduced the crash again,
+# against a machine that had reproduced it repeatedly before.
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -209,3 +232,70 @@ STOPWORD_REPORT = PROCESSED_DIR / "05_stopword_report.txt"
 # to build against until it exists, rather than a constant edited by hand
 # after reading a table.
 RETRIEVAL_DECISION = PROCESSED_DIR / "05_retrieval_decision.json"
+
+
+# --- stage 8: router and techniques -------------------------------------------
+
+# The cross-encoder for Reranking. XLM-R-large, the plan's own choice and the
+# same family as BGE-M3. bge-reranker-base is the documented fallback if the
+# v2-m3 checkpoint does not finish downloading against the deadline: about
+# half the download, weaker on Arabic, and the report has to say so as a
+# time decision rather than a measured one.
+RERANK_MODEL = "BAAI/bge-reranker-v2-m3"
+
+# How many of the fused candidates the cross-encoder actually scores.
+# advanced-rag-plan.md's own component table budgets "around 20 pairs per
+# query" for the CPU reranker; this is that budget, named rather than
+# recomputed. Wider than RETRIEVAL_K so a chunk fusion ranked just outside
+# the top 10 can still be promoted back in by the reranker.
+RERANK_TOP_N = 20
+
+# Paraphrases Multi-Query generates, beside the original question, all fused
+# by fusion.reciprocal_rank_fusion. Not measured yet: a reasoned default
+# rather than a number the golden set chose, and evaluate.py's per-technique
+# grid is what gets to say whether more would help.
+MULTIQUERY_N = 3
+
+# Sub-questions Decomposition asks for at most. Q5's two-table structure,
+# the case the golden set was built to exercise, is the worst case measured
+# so far; four leaves room for a genuinely three-part question without
+# inviting the router to over-decompose a two-part one.
+DECOMPOSE_MAX = 4
+
+# HyDE's hypothetical passage. Short on purpose: this is a retrieval query
+# in prose form, not a synthesised answer, and a long one dilutes the
+# embedding toward generic phrasing rather than the corpus's own vocabulary.
+HYDE_MAX_TOKENS = 200
+
+# CRAG's own adaptation, recorded in the plan: no web search in a closed
+# domain, so "incorrect" falls back to one corpus re-query with a rewritten
+# query, and refuses if that also grades low. One retry, not a loop: a
+# second consecutive miss is evidence the corpus does not answer this,
+# which is exactly Q10's case, not evidence the first rewrite was unlucky.
+CRAG_MAX_REQUERIES = 1
+
+# Characters per token, for turning LLM_CONTEXT into a character budget
+# Compression can size against without calling a tokenizer per candidate
+# chunk. llm.md measured 2.8 chars/token against Qwen2.5's own tokenizer on
+# this corpus; this rounds down from that on purpose. Overestimating tokens
+# only triggers compression that was not strictly needed; underestimating
+# lets a prompt overflow, and llm.md also measured that an overflowing
+# prompt does not raise or warn, it is silently cut to half the context and
+# answers fluently from what remains. The asymmetry decides which way to
+# round.
+CHARS_PER_TOKEN = 2.5
+
+# Tokens reserved out of LLM_CONTEXT for the system prompt, the question and
+# the model's own answer, when Compression computes how much retrieved
+# context is actually allowed to reach the prompt. Generous on purpose, for
+# the same overflow failure mode CHARS_PER_TOKEN's comment describes.
+GENERATION_RESERVE_TOKENS = 1500
+
+ROUTER_OUTPUT = PROCESSED_DIR / "06_router.md"
+TECHNIQUES_OUTPUT = PROCESSED_DIR / "06_techniques.md"
+
+# What stage 8 decided about defaulting reranking on for advanced_rag, read
+# back the same way RETRIEVAL_DECISION is: an artifact on disk stage 9 and
+# stage 10 can refuse to build against until it exists, rather than a
+# constant edited by hand after reading a table.
+TECHNIQUE_DECISION = PROCESSED_DIR / "06_technique_decision.json"
