@@ -13,6 +13,7 @@
     python cli.py retrieve      the retrieval grid, the device probe, or one query
     python cli.py route         one question through the pre-gate and router
     python cli.py techniques    one question through the full pipeline, or the reports
+    python cli.py ask           two-stage generation: one question end to end, or the reports
 """
 
 from __future__ import annotations
@@ -189,6 +190,24 @@ def main(argv: list[str] | None = None) -> int:
              "chunk ids and which techniques executed",
     )
 
+    ask_parser = sub.add_parser(
+        "ask",
+        help="two-stage generation: one question through the full "
+             "pipeline to a presented answer, or the generation report",
+    )
+    ask_group = ask_parser.add_mutually_exclusive_group()
+    ask_group.add_argument(
+        "--evaluate", action="store_true",
+        help="run the crag-threshold measurement, the entailment "
+             "bake-off, and every generation gate, and write the "
+             "generation report and decision",
+    )
+    ask_group.add_argument(
+        "question", nargs="?", default=None,
+        help="answer one question end to end: route, retrieve, "
+             "generate, guard, and print the presented answer",
+    )
+
     args = parser.parse_args(argv)
 
     if args.command == "textlayer":
@@ -333,6 +352,65 @@ def main(argv: list[str] | None = None) -> int:
                 print("CRAG refused: no confident answer found in the corpus")
             return 0
         techniques_parser.print_help()
+        return 1
+
+    if args.command == "ask":
+        if args.evaluate:
+            from pipeline.generation import evaluate as generation_evaluate
+            return 0 if generation_evaluate.run() else 1
+        if args.question:
+            from pipeline.config import PROCESSED_DIR
+            from pipeline.llm.ledger import Ledger
+            from pipeline.retrieval.retriever import open_shipping
+            from pipeline.techniques import rerank
+            from pipeline.generation.run import answer
+
+            # warm_up() before open_shipping(): the same load-bearing
+            # order techniques' own cli-techniques branch already
+            # follows, since a single ad-hoc question is not known to
+            # need Reranking until the router runs inside answer().
+            rerank.warm_up()
+            with open_shipping() as handle:
+                result = answer(args.question, Ledger(label="cli-ask"), handle)
+
+            # Arabic to the console is the one thing every other command
+            # in this file avoids, on purpose: llm.md and gate.py's own
+            # __main__ both document a Windows console's cp1252 default
+            # raising outright on the first Arabic letter. reconfigure()
+            # is a genuine improvement over that crash, not a full fix
+            # for every terminal's own rendering, so the full answer is
+            # also written to a file, the same fallback every Arabic
+            # output in this project already relies on.
+            try:
+                sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+            except (AttributeError, ValueError):
+                pass
+
+            print(f"kind: {result.kind}")
+            if result.refusal_kind:
+                print(f"refusal_kind: {result.refusal_kind}")
+            print(f"citations: {list(result.citations)}")
+            if result.presenter_rejected:
+                print("presenter rejected by the guard; showing the "
+                      "synthesised text instead")
+            print(f"\n{result.text}")
+
+            out_path = PROCESSED_DIR / "_last_ask.txt"
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_text(
+                f"question: {result.question}\n"
+                f"kind: {result.kind}\n"
+                f"refusal_kind: {result.refusal_kind}\n"
+                f"citations: {list(result.citations)}\n"
+                f"presenter_rejected: {result.presenter_rejected}\n\n"
+                f"text:\n{result.text}\n\n"
+                f"synthesised:\n{result.synthesised}\n\n"
+                f"presented:\n{result.presented}\n",
+                encoding="utf-8",
+            )
+            print(f"\n(also written to {out_path})")
+            return 0
+        ask_parser.print_help()
         return 1
 
     from pipeline.ingestion import compare

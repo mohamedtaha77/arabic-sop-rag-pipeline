@@ -72,7 +72,26 @@ SPEC_STEPS = frozenset({
 # record_local. They spend no tokens and real seconds. Running locally makes
 # latency the scarce resource, so a cross-encoder costing two seconds a query
 # belongs in the table rather than being invisible because it is free.
-LOCAL_STEPS = frozenset({"Reranking", "Grounding guard"})
+#
+# "Grounding guard" was written here before stage 9 existed, on the plan's
+# own original assumption that entailment would run on a local NLI model.
+# Stage 9's own bake-off (generation/entail.py) measured two backends
+# against a benchmark built from the golden set and found the LLM judge
+# backend (JUDGE_MODEL, a real endpoint call) wins where it matters most:
+# recall on a same-topic, wrong-fact fabrication, the exact shape this
+# guard exists to catch, well ahead of the local NLI model's own recall
+# on that specific case, even though the NLI model scored marginally
+# higher in aggregate. The shipped mechanism spends real tokens, so it
+# cannot stay classified as free CPU work; this is the same kind of
+# correction techniques/run.py's own PROVISIONAL_CRAG_THRESHOLD comment
+# already anticipates, an earlier stage's placeholder assumption
+# superseded once a later stage actually measures the real answer. If a
+# future re-run of that bake-off ever favours the local NLI backend
+# instead, "Grounding guard" belongs back in this set, and
+# generation/entail.py's own NLI path would need a record_local call
+# added to match, which it does not have today because today's shipped
+# path never reaches it.
+LOCAL_STEPS = frozenset({"Reranking"})
 
 # Steps paid once when the index is built, never per question. Stage 4's ~357
 # contextualisation calls are the first of these: every per-question ledger

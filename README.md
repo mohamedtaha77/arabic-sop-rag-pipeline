@@ -270,6 +270,8 @@ python cli.py route --evaluate        # route agreement against the golden set
 python cli.py route "..."             # one question through the pre-gate and router
 python cli.py techniques --evaluate   # the router and technique reports, the decision
 python cli.py techniques "..."        # one question through the full pipeline
+python cli.py ask --evaluate          # the generation report, the crag threshold and guard decisions
+python cli.py ask "..."               # one question end to end: route, retrieve, generate, guard
 ```
 
 Run `textlayer` first. It is cheap, and it populates the version metadata the
@@ -594,6 +596,78 @@ process as query-time embedding: loading two large XLM-R-family
 checkpoints together on this machine crashes, in both load orders,
 confirmed directly rather than assumed from the bake-off's own earlier
 finding of the same fault between two checkpoints in one process.
+
+## Two-stage generation
+
+A prompt telling a model not to add facts is not enforcement, so the
+constraint is split into a synthesiser that sees the retrieved context
+and writes a grounded, cited answer, and a presenter that sees only that
+answer and its citations, never the context, and is rejected outright if
+it introduces a number, date, name or citation the synthesiser never
+wrote. Two separate, programmatic checks sit between them: a
+deterministic token diff catching the presenter, and an entailment check
+catching the synthesiser itself, a sentence checked against the actual
+chunk it cites rather than against whether its citation marker merely
+resolves.
+
+The synthesiser's own system prompt went through four measured
+revisions before shipping, each kept only when a wider gate proved it
+helped. Two defects only showed up once the gate widened from three
+questions to eight: an answer that copied the retrieved context's own
+internal formatting into its text, and an answer that recited a fixed
+worked example word for word rather than the real question. Both traced
+to a specific, fixable prompt gap; a third failure shape, the model
+occasionally producing a bare citation marker with no real sentence
+attached to it, is caught in code instead, a bounded one-shot retry
+triggered by a mechanical check (does the answer have real content, does
+it leak an internal chunk id) rather than a fifth prompt attempt. One
+residual ships anyway, reported rather than hidden: one golden question
+still returns an uncited answer after the retry, the same "measured
+limitation, not smoothed over" standard CRAG's own precision number
+above is held to.
+
+The entailment check's own backend was chosen by a bake-off, not a
+preference, between a purpose-trained local NLI model and the same
+local LLM judge CRAG uses for a different task. The NLI model scored
+higher in aggregate (0.732 against 0.720 balanced accuracy), but the
+gap is narrow enough to be noise on a 67-case benchmark, and read by
+category rather than in aggregate, the LLM judge is markedly better at
+the one case that actually matters: recognising a same-topic sentence
+with a single fact changed, the real shape of a fabrication (0.857
+recall against the NLI model's 0.571). The LLM judge ships on that
+basis. Its own recall on genuinely correct claims is a measured 0.467,
+which is exactly why entailment is treated as a reported signal in the
+per-answer trace and never as a trigger that refuses a whole answer on
+its own: gating on a signal this noisy would refuse as many good answers
+as bad ones, the same lesson CRAG's own precision problem already
+teaches elsewhere in this pipeline.
+
+The presenter's own guard fires on a real, measured 37.5% of answers
+across eight standalone questions, not a defect count to drive to zero:
+a presenter that never tried to add anything would report zero and be
+indistinguishable from one this guard was never actually tested against.
+Both real catches were inspected by hand. One invented a citation number
+out of nothing for an answer the synthesiser had left uncited; the other
+split one paragraph, genuinely supported by one source, into four
+sentences each carrying a different invented citation, a fabrication of
+provenance rather than of fact.
+
+The CRAG confidence threshold that decides when a retrieval result is
+uncertain enough to grade was, until this stage, an untested placeholder.
+Measured properly, across the golden set's own seven `advanced_rag`
+questions plus the one built to need CRAG, no score cleanly separates
+the case that needs catching from the rest; the threshold that ships is
+the smallest one that reliably sends that one case to CRAG's own
+semantic grading, accepting that five otherwise-answerable questions get
+graded unnecessarily too, a real, reported cost rather than a hidden
+one. Measuring it end to end surfaced a sharper finding than the
+threshold itself: the router's own known, accepted classification
+instability on this exact question (one of three the router occasionally
+disagrees with itself on) can silently skip Reranking and CRAG both,
+since CRAG's own trigger only ever runs for the advanced route. That is
+a property of the shipped system worth stating plainly rather than
+papering over with a threshold that cannot fix a routing decision made
+one step upstream of it.
 
 ## Planned design decisions
 

@@ -299,3 +299,59 @@ TECHNIQUES_OUTPUT = PROCESSED_DIR / "06_techniques.md"
 # stage 10 can refuse to build against until it exists, rather than a
 # constant edited by hand after reading a table.
 TECHNIQUE_DECISION = PROCESSED_DIR / "06_technique_decision.json"
+
+
+# --- stage 9: two-stage generation --------------------------------------------
+
+# The synthesiser's own completion cap, and what its prompt-budget preflight
+# reserves out of LLM_CONTEXT for the answer itself. One number for both
+# purposes, since they are the same fact stated from two directions: the
+# server will not emit more than this many tokens, so the prompt has no
+# business reserving less room than that.
+#
+# Raised from an initial 900 after synthesise.py's own gate measured it
+# overflow for real on Q19, the six-roles-across-three-manuals question:
+# once a prompt fix stopped the model echoing a fixed worked example
+# (synthesise.py's own docstring has the full finding), it tried to write
+# a genuine full reconciliation and hit exactly 900 completion tokens,
+# raising client.py's finish_reason == "length" guard rather than
+# returning a real, complete answer. 1,400 gives that answer shape real
+# headroom above the corpus's own largest measured chunk (llm.md:
+# ~1,040 tokens against Qwen2.5's tokenizer) while still leaving
+# LLM_CONTEXT - SYNTHESIS_MAX_TOKENS = 6,792 tokens of room for retrieved
+# context, comfortably above what even ten uncompressed chunks measure.
+SYNTHESIS_MAX_TOKENS = 1400
+
+# The presenter reformats an already-short synthesised answer; it has no
+# reason to need more room than the synthesiser did; it only ever gets less
+# to work with, since the whole point of splitting generation in two is that
+# the presenter adds structure, not content.
+PRESENTER_MAX_TOKENS = SYNTHESIS_MAX_TOKENS
+
+# A refusal is one or two sentences explaining that the corpus does not
+# cover a question, never a synthesised answer; generous relative to that
+# real shape without inviting the model to pad a refusal into something
+# longer than it has any reason to be.
+REFUSAL_MAX_TOKENS = 200
+
+# The "simple" route: a greeting reply or a brief general definition with
+# no retrieval behind it (the task's own Q1, "What is RAG?", is this
+# shape). Roomier than a refusal, since a definition runs longer than a
+# one-line decline, still nowhere near a synthesised answer's own budget.
+DIRECT_MAX_TOKENS = 300
+
+# The entailment backend the guard's own bake-off measures against the LLM
+# judge. mDeBERTa rather than a larger XNLI checkpoint, on the same reasoning
+# rerank.py gives for its own cross-encoder pick: CPU latency at this size is
+# acceptable and it leaves the card free. Its own 512-token position limit
+# means a chunk longer than that gets truncated as the NLI premise, which
+# entail.py's own module docstring records as a real, accepted limitation
+# rather than something silently absorbed.
+NLI_MODEL = "MoritzLaurer/mDeBERTa-v3-base-xnli-multilingual-nli-2mil7"
+
+# What stage 9 decided: which entailment backend shipped, the CRAG threshold
+# it measured, and the presenter's own block rate, read back the same way
+# TECHNIQUE_DECISION is by stage 10, rather than a constant edited by hand
+# after reading a table.
+GENERATION_OUTPUT = PROCESSED_DIR / "07_generation.md"
+GENERATION_DECISION = PROCESSED_DIR / "07_generation_decision.json"

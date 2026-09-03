@@ -65,6 +65,7 @@ from typing import Any
 
 from ..config import (
     CHARS_PER_TOKEN,
+    GENERATION_DECISION,
     GENERATION_RESERVE_TOKENS,
     LLM_CONTEXT,
     RERANK_TOP_N,
@@ -190,6 +191,26 @@ def _reranking_default(decision_path: Path = TECHNIQUE_DECISION) -> bool:
     return True
 
 
+def _crag_threshold_default(decision_path: Path = GENERATION_DECISION) -> float:
+    """The same read-a-decision-file-or-fall-back-to-a-placeholder shape
+    as _reranking_default above, for the other number this file's own
+    module docstring flagged as provisional: PROVISIONAL_CRAG_THRESHOLD
+    was always a stated placeholder, "just has to be good enough to make
+    CRAG's runtime trigger testable before that measurement exists", and
+    generation/evaluate.py (stage 9's own file 7) is what actually
+    measures it, from the real separation between the 18 answerable
+    questions' own top scores and Q10's. Read here, from config.py's
+    GENERATION_DECISION, rather than the ledger PROVISIONAL_CRAG_THRESHOLD
+    constant this file used to depend on directly, once that measurement
+    exists; the constant stays as the honest fallback for a first build
+    that has not run stage 9's own evaluate.py yet.
+    """
+    if decision_path.exists():
+        stored = json.loads(decision_path.read_text(encoding="utf-8"))
+        return float(stored.get("crag_threshold", PROVISIONAL_CRAG_THRESHOLD))
+    return PROVISIONAL_CRAG_THRESHOLD
+
+
 def _resolve_technique_set(
     decision: RouteDecision, override: TechniqueSet | None,
 ) -> TechniqueSet:
@@ -227,7 +248,7 @@ def answer(
     handle: ShippingHandle,
     history: list[tuple[str, str]] | None = None,
     technique_set: TechniqueSet | None = None,
-    crag_threshold: float = PROVISIONAL_CRAG_THRESHOLD,
+    crag_threshold: float | None = None,
 ) -> QuestionRun:
     """Route, retrieve, and apply whichever techniques the route calls
     for, once, for one question.
@@ -243,7 +264,20 @@ def answer(
     regardless of what the router picks, and this module's own gate
     below, which checks that a forced TechniqueSet.none() reproduces the
     shipping ranking exactly with nothing else touching it.
+
+    crag_threshold defaults to None rather than to
+    PROVISIONAL_CRAG_THRESHOLD directly, the same reason
+    _reranking_default is called from inside _resolve_technique_set's own
+    body rather than baked into a default parameter value: a Python
+    default is evaluated once, at import time, and would freeze whatever
+    GENERATION_DECISION held (or did not yet hold) the moment this module
+    was first imported, never re-reading it after stage 9's own
+    evaluate.py writes the real, measured value. None here means "read
+    the current decision file, or the honest placeholder if it does not
+    exist yet", resolved fresh on every call.
     """
+    if crag_threshold is None:
+        crag_threshold = _crag_threshold_default()
     gate_decision = pre_gate_check(question)
     if gate_decision is not None:
         return QuestionRun(
