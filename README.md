@@ -182,6 +182,8 @@ rather than sequential across the corpus. Under a corpus-wide sequence, insertin
 one chunk renumbers everything after it and silently invalidates the gold ids the
 evaluation set names by hand.
 
+![A browser view of the corpus's 357 chunks, one row each, showing source manual, page, chunk type, character count and a text preview](docs/screenshots/chunk_browser.png)
+
 ## Setup
 
 Requires Python 3.13.
@@ -522,6 +524,17 @@ e5-large's 512-token cap silently truncates about 1% of the corpus, named by
 chunk id rather than smoothed into a percentage; BGE-M3's 8,192-token cap is
 never approached.
 
+BGE-M3's own dense vectors for all 357 chunks, 1,024 dimensions each,
+projected down to the two directions of greatest spread by PCA (computed
+directly with numpy's SVD, no separate library). The three manuals separate
+into three distinct, largely non-overlapping clusters before any question is
+ever asked of them, a real signal about embedding quality rather than an
+assumption resting on the golden set's own 18 questions alone. The first two
+components explain 27.3% of total variance, so this is a hint about the
+corpus's own structure, not the whole of it.
+
+![A 2D PCA projection of all 357 chunk embeddings, colour-coded by source manual, showing three well-separated clusters](docs/screenshots/embedding_space.png)
+
 ## Vector store
 
 Qdrant, local file mode, one collection per context variant, built with the
@@ -669,6 +682,29 @@ since CRAG's own trigger only ever runs for the advanced route. That is
 a property of the shipped system worth stating plainly rather than
 papering over with a threshold that cannot fix a routing decision made
 one step upstream of it.
+
+## Serving
+
+`cli.py serve` runs a three-pane local assistant on top of everything
+above: chat on the left, the exact page a citation came from on the
+right with the passage highlighted, and live per-step cost and latency
+below it. Citation highlighting reuses the table geometry the layout
+stage already recorded rather than re-detecting tables at serve time,
+matched by bounding box since a stored table index turned out to point
+into a per-page list that a fresh detection pass does not reproduce in
+the same order. 316 of the corpus's 357 chunks resolve to a real
+highlight rectangle this way; the rest are prose that never went
+through table detection at all, and the pane says so directly instead
+of drawing a plausible-looking box over the wrong region.
+
+One process holds the vector store open for its whole lifetime and a
+single lock serialises questions, both inherited directly from the
+same constraints named under Vector store and the local model layer
+above: Qdrant's local mode admits one process, and this machine cannot
+hold the embedder, the reranker and the generator resident at once at
+their combined peak.
+
+![The assistant answering a real question, with the technique pills, the cited page highlighted on the right, and the per-step cost and latency breakdown all visible](docs/screenshots/serve_answer_and_pricing.png)
 
 ## Planned design decisions
 
