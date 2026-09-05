@@ -59,6 +59,7 @@ from ..config import (
     DIRECT_MAX_TOKENS,
     GENERATION_DECISION,
     GENERATOR_MODEL,
+    GUARD_BACKEND,
     REFUSAL_MAX_TOKENS,
 )
 from ..llm.ledger import Ledger
@@ -136,10 +137,10 @@ def _entailment_config() -> tuple[str, float]:
         stored = json.loads(GENERATION_DECISION.read_text(encoding="utf-8"))
         threshold = stored.get("entailment_threshold")
         return (
-            stored.get("guard_backend", "llm"),
+            GUARD_BACKEND or stored.get("guard_backend", "llm"),
             0.5 if threshold is None else float(threshold),
         )
-    return "llm", 0.5
+    return GUARD_BACKEND or "llm", 0.5
 
 
 @dataclass
@@ -255,6 +256,7 @@ def answer(
     handle: ShippingHandle,
     history: list[tuple[str, str]] | None = None,
     technique_set: TechniqueSet | None = None,
+    route_override: str | None = None,
 ) -> Answer:
     """Route, retrieve, generate, and guard, once, for one question.
 
@@ -264,9 +266,20 @@ def answer(
     runs the golden set in order is what has to thread this file's own
     Answer.text from one call into the next call's history, the same way
     techniques.run.answer's own history parameter already expects.
+
+    ``route_override`` passes straight through to techniques.run.answer;
+    see that function's own docstring for why it exists (stage 10's basic
+    arm, section 2's own router-free flow). Nothing below this line reads
+    it directly: once techniques_answer has resolved a QuestionRun,
+    generation neither knows nor cares whether its route came from the
+    router or was forced, the same two-stage synthesise/guard/present
+    chain applies either way, because section 5's own "Final Generation"
+    requirements do not differ between a basic and an advanced route in
+    this project's own shipped design; only the retrieval side does.
     """
     run_result = techniques_answer(
         question, ledger, handle, history=history, technique_set=technique_set,
+        route_override=route_override,
     )
 
     if run_result.decision.route == "simple" and run_result.decision.refusal_kind is not None:

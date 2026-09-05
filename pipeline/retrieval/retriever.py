@@ -135,8 +135,14 @@ def build_context(
 def _dense_ranking(
     context: RetrievalContext, question: str, k: int, device: str,
 ) -> list[str]:
+    # use_worker=(device == "cpu"): routes through _embed_worker.py's own
+    # isolated subprocess exactly when this is a real query-time call
+    # (QUERY_DEVICE), never for device_probe.py's own explicit "cuda"
+    # comparison, which needs the in-process load it is actually
+    # measuring. See _embed_worker.py's own module docstring for the
+    # fault this avoids.
     vector = embedder.embed_queries(
-        [question], context.model_key, device=device,
+        [question], context.model_key, device=device, use_worker=(device == "cpu"),
     )[0]
     result = context.client.query_points(
         collection_name=context.collection, query=vector.tolist(),
@@ -152,7 +158,9 @@ def _sparse_ranking(
     # now documents why an omitted device here would try to load bge-m3 a
     # second time on whatever embedder._load_model auto-selects, colliding
     # with _dense_ranking's already-resident copy in the same process.
-    (indices, values), = sparse.embed_sparse_queries([question], device=device)
+    (indices, values), = sparse.embed_sparse_queries(
+        [question], device=device, use_worker=(device == "cpu"),
+    )
     result = context.client.query_points(
         collection_name=context.collection,
         query=models.SparseVector(indices=indices, values=values),
@@ -279,8 +287,10 @@ def _dense_ranking_scored(
     context: RetrievalContext, question: str, k: int, device: str,
     qdrant_filter: models.Filter | None,
 ) -> list[tuple[str, float]]:
+    # use_worker=(device == "cpu"): see _dense_ranking's own comment
+    # above for the reason.
     vector = embedder.embed_queries(
-        [question], context.model_key, device=device,
+        [question], context.model_key, device=device, use_worker=(device == "cpu"),
     )[0]
     result = context.client.query_points(
         collection_name=context.collection, query=vector.tolist(),
@@ -293,7 +303,9 @@ def _sparse_ranking_scored(
     context: RetrievalContext, question: str, k: int, device: str,
     qdrant_filter: models.Filter | None,
 ) -> list[tuple[str, float]]:
-    (indices, values), = sparse.embed_sparse_queries([question], device=device)
+    (indices, values), = sparse.embed_sparse_queries(
+        [question], device=device, use_worker=(device == "cpu"),
+    )
     result = context.client.query_points(
         collection_name=context.collection,
         query=models.SparseVector(indices=indices, values=values),

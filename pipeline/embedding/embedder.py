@@ -157,8 +157,22 @@ def _load_model(model_key: str, device: str | None = None):
 
         # load_with_retry: see tokens.py's own docstring for what this
         # guards against, found during stage 8 against this exact call.
+        # low_cpu_mem_usage=True: _rerank_worker.py's own _load already
+        # uses this, on the reasoning that the default loading path
+        # builds a full random-weight model first, then overlays the
+        # checkpoint on top, transiently needing roughly twice the
+        # model's final memory before the random buffer is freed. This
+        # call never carried the same flag, a real, findable gap between
+        # the two loaders rather than a considered difference, found
+        # while building _embed_worker.py: two isolated model-holding
+        # processes, each already at its own steady-state footprint,
+        # still failed to coexist on this machine's own tight free
+        # memory, and this is one genuine lever against the transient
+        # peak a fresh load adds on top of whatever is already resident.
         model = load_with_retry(
-            lambda: AutoModel.from_pretrained(EMBED_MODELS[model_key]),
+            lambda: AutoModel.from_pretrained(
+                EMBED_MODELS[model_key], low_cpu_mem_usage=True,
+            ),
             f"model weights for {model_key}",
         )
         if dtype is not torch.float32:
@@ -266,14 +280,27 @@ def _store_cached(
 
 def _encode_uncached(
     texts: list[str], model_key: str, kind: Kind, batch_size: int,
-    device: str | None = None,
+    device: str | None = None, use_worker: bool = False,
 ) -> np.ndarray:
     """Run the model over texts with no cache lookups at all: pure compute.
 
     Batch size only ever shrinks within one call, on an OOM, and never grows
     back, so a card that had to fall back once is not asked to try the
     original size again on the very next batch.
+
+    use_worker routes this call to _embed_worker.py's own persistent
+    subprocess instead of loading the model here: retriever.py's own
+    query-time calls pass this when device="cpu", the one path that
+    otherwise segfaults on a genuine cache miss colliding with an
+    already-resident reranker worker (see _embed_worker.py's own module
+    docstring for the full account). Every index-time caller (the
+    bake-off, the store build) never passes this and is unaffected.
     """
+    if use_worker:
+        from ..retrieval import embed_client
+        vectors = embed_client.dense(texts, kind)
+        return np.asarray(vectors, dtype=np.float32)
+
     model, device, dtype = _load_model(model_key, device)
     tokenizer = get_tokenizer(model_key)
     pool = _POOLING[model_key]
@@ -315,7 +342,7 @@ def _encode_uncached(
 def embed_texts(
     texts: list[str], model_key: str, kind: Kind,
     batch_size: int = EMBED_BATCH_SIZE, use_cache: bool = True,
-    device: str | None = None,
+    device: str | None = None, use_worker: bool = False,
 ) -> np.ndarray:
     """Unit-norm vectors for every text, cache-aware, in the input order.
 
@@ -326,6 +353,11 @@ def embed_texts(
     device is None everywhere except retriever.py's query-time call sites,
     which is what keeps every existing caller, the bake-off, run_embed, the
     store build, on the original auto-detect behaviour with no change here.
+
+    use_worker is the same story one level up: only retriever.py's own
+    query-time calls ever pass it, and only when device="cpu". The disk
+    cache lookup above still runs first regardless, so a cache hit never
+    pays for a worker round trip it does not need.
     """
     vectors: list[np.ndarray | None] = [None] * len(texts)
     to_compute: list[int] = []
@@ -338,7 +370,8 @@ def embed_texts(
 
     if to_compute:
         fresh = _encode_uncached(
-            [texts[i] for i in to_compute], model_key, kind, batch_size, device
+            [texts[i] for i in to_compute], model_key, kind, batch_size, device,
+            use_worker=use_worker,
         )
         for idx, vector in zip(to_compute, fresh):
             vectors[idx] = vector

@@ -66,7 +66,7 @@ def _load_sparse_linear(device: str | None = None) -> torch.nn.Linear:
 
 
 def _sparse_batch(
-    texts: list[str], device: str | None = None,
+    texts: list[str], device: str | None = None, use_worker: bool = False,
 ) -> list[tuple[list[int], list[float]]]:
     """One batch through the model, dense forward pass reused for sparse.
 
@@ -77,7 +77,17 @@ def _sparse_batch(
     embedder.py's _load_model docstring now documents. Confirmed directly:
     retriever.py's first smoke test crashed exactly this way before this
     function took a device argument at all.
+
+    use_worker routes this to _embed_worker.py's own persistent
+    subprocess instead, the same reason and the same caller
+    (retriever.py, device="cpu") as embedder._encode_uncached's own
+    use_worker parameter; see that file's own docstring for the fault
+    this exists to avoid.
     """
+    if use_worker:
+        from ..retrieval import embed_client
+        return embed_client.sparse(texts, "query")
+
     model, resolved_device, dtype = embedder._load_model(_MODEL_KEY, device)
     tokenizer = get_tokenizer(_MODEL_KEY)
     sparse_linear = _load_sparse_linear(device)
@@ -190,7 +200,7 @@ def _store_cached(
 
 def _embed_sparse(
     texts: list[str], kind: Kind, batch_size: int, use_cache: bool,
-    device: str | None = None,
+    device: str | None = None, use_worker: bool = False,
 ) -> list[tuple[list[int], list[float]]]:
     results: list[tuple[list[int], list[float]] | None] = [None] * len(texts)
     to_compute: list[int] = []
@@ -204,7 +214,9 @@ def _embed_sparse(
     for start in range(0, len(to_compute), batch_size):
         batch_indices = to_compute[start:start + batch_size]
         batch_texts = [texts[i] for i in batch_indices]
-        for i, result in zip(batch_indices, _sparse_batch(batch_texts, device)):
+        for i, result in zip(
+            batch_indices, _sparse_batch(batch_texts, device, use_worker=use_worker),
+        ):
             results[i] = result
             if use_cache:
                 _store_cached(texts[i], kind, result, device)
@@ -226,7 +238,7 @@ def embed_sparse_passages(
 
 def embed_sparse_queries(
     texts: list[str], batch_size: int = EMBED_BATCH_SIZE, use_cache: bool = True,
-    device: str | None = None,
+    device: str | None = None, use_worker: bool = False,
 ) -> list[tuple[list[int], list[float]]]:
     """Sparse (indices, values) pairs for every query text, input order.
 
@@ -243,4 +255,4 @@ def embed_sparse_queries(
     that may already hold bge-m3 on a specific device, and the two have to
     agree or this loads a second checkpoint copy and segfaults.
     """
-    return _embed_sparse(texts, "query", batch_size, use_cache, device)
+    return _embed_sparse(texts, "query", batch_size, use_cache, device, use_worker)

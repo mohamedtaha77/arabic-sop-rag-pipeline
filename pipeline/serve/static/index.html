@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Housing Bank RAG Assistant</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Tajawal:wght@400;500;700&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+
+<header>
+  <div class="header-left">
+    <div class="trust-badge">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#3A7D44" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l8 4v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6l8-4z"/><path d="M9.5 12l2 2 3.5-4"/></svg>
+      <span>Runs on-device &middot; no cloud calls</span>
+    </div>
+    <span id="status-pill" class="status-pill">ready</span>
+  </div>
+  <img src="/logo.jpeg" alt="Housing Bank" class="logo">
+</header>
+
+<main>
+  <!-- CHAT -->
+  <section class="panel chat-panel">
+    <div id="thread" class="thread">
+      <div class="empty-thread">
+        <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#C4C0B7" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
+        <p>Ask a question about the three procedure manuals</p>
+        <div class="samples">
+          <button class="sample ar" dir="rtl">قارن بين الموافقات المطلوبة لمشاهدة كاميرات الفرع وللتدقيق الداخلي، واذكر الموافقة الداخلية في كل حالة، ومتى تُطلب موافقة المدير التنفيذي</button>
+          <button class="sample ar" dir="rtl">ما هي الأعطال والمشاكل التي قد تصيب أنظمة المراقبة التلفزيونية؟</button>
+          <button class="sample ar" dir="rtl">من الجهة التي توافق على صرف طلبية اللوازم والقرطاسية للفروع ومراكز العمل؟</button>
+          <button class="sample ar" dir="rtl">كيف تصل الكتب الصادرة عن البنك المركزي وجمعية البنوك الى وحدة البريد المركزي؟</button>
+          <button class="sample ar" dir="rtl">من يتحقق من مطابقة محتويات البريد الوارد من الفروع؟</button>
+          <button class="sample ar" dir="rtl">ما هي المدة القصوى بين عمليات فحص تسجيلات المراقبة؟</button>
+          <button class="sample ar" dir="rtl">ما هي إجراءات إصدار بطاقات الائتمان للعملاء؟</button>
+          <button class="sample ar" dir="rtl">ما هي أفضل طريقة لاستثمار مدخراتي؟</button>
+        </div>
+      </div>
+    </div>
+    <form id="composer" class="composer">
+      <input id="question" class="ar" dir="rtl" autocomplete="off" placeholder="اكتب سؤالك هنا...">
+      <button id="send" type="submit" title="Send">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" style="transform: scaleX(-1)"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/></svg>
+      </button>
+    </form>
+  </section>
+
+  <!-- RIGHT COLUMN -->
+  <div class="right-col">
+    <section class="panel source-panel">
+      <div class="source-head">
+        <div id="breadcrumb" class="breadcrumb">No source cited yet</div>
+        <div id="cite-tabs" class="cite-tabs"></div>
+      </div>
+      <div id="page-stage" class="page-stage">
+        <div class="page-empty">
+          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#C4C0B7" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><path d="M14 2v6h6"/></svg>
+          <p>Cited pages appear here, with the passage highlighted</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel metrics-panel">
+      <div class="tiles">
+        <div class="tile"><span class="tile-label">COST</span><span id="m-cost" class="tile-value">&mdash;</span></div>
+        <div class="tile"><span class="tile-label">LATENCY</span><span id="m-lat" class="tile-value">&mdash;</span></div>
+        <div class="tile"><span class="tile-label">IN TOK.</span><span id="m-in" class="tile-value">&mdash;</span></div>
+        <div class="tile"><span class="tile-label">OUT TOK.</span><span id="m-out" class="tile-value">&mdash;</span></div>
+      </div>
+      <div class="steps-box">
+        <div class="steps-head">
+          <span>Per-step breakdown</span>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
+        </div>
+        <div id="steps" class="steps"><div class="steps-empty">No question answered yet</div></div>
+      </div>
+      <div class="session-total">
+        <span>SESSION TOTAL</span>
+        <span id="session-total">$0.000000 &middot; 0 tok</span>
+      </div>
+    </section>
+  </div>
+</main>
+
+<script src="/app.js"></script>
+</body>
+</html>

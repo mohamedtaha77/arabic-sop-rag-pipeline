@@ -11,8 +11,7 @@ their accuracy.
 
 ## Status
 
-Ingestion, chunking, the local model layer, context prefixes, the golden set,
-embedding and the vector store are complete. Later stages are in progress.
+All eleven stages are complete, from ingestion through evaluation, the report and the served assistant.
 
 | Stage | Status | Output |
 |---|---|---|
@@ -23,9 +22,11 @@ embedding and the vector store are complete. Later stages are in progress.
 | Golden set | done | 20 Arabic questions with reference answers and gold chunk ids, read off rendered pages by hand |
 | Embedding | done | BAAI/bge-m3, settled against intfloat/multilingual-e5-large on the golden set |
 | Vector store | done | three Qdrant collections, dense and sparse, verified against a brute-force ranking |
-| Retrieval | not started | hybrid BM25 and vector, with rank fusion |
-| Generation | not started | grounded answers with version-aware citations |
-| Evaluation | not started | accuracy against a labelled question set |
+| Retrieval | done | hybrid dense, learned sparse and BM25, fused by RRF, measured against a shipped baseline |
+| Router and techniques | done | a deterministic pre-gate plus a router call, and all eight advanced techniques, each independently switchable |
+| Two-stage generation | done | a grounded synthesiser, a format-only presenter, and two independent programmatic guards between them |
+| Evaluation | done | three answering arms (basic, adaptive, forced), judged on the same four metrics ragas defines, through a direct rubric call after ragas itself proved unusable against these local models, `REPORT.md` |
+| Serving | done | a three-pane local assistant, chat plus the exact cited page with the passage highlighted plus live cost, `cli.py serve` |
 
 ## Why ingestion needed two extraction routes
 

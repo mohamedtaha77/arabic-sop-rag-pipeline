@@ -42,14 +42,83 @@ import sys
 from ..config import RERANK_MODEL
 from ..embedding.tokens import load_with_retry
 
+# What GENERATOR_MODEL occupies on this card, measured from Ollama's own
+# /api/ps: 2.16 GB for qwen2.5:3b-instruct-q4_K_M at 4096 context. The
+# reranker refuses the GPU unless this much would still be left, because
+# a reranker that wins the card and pushes generation onto the CPU trades
+# 28 seconds of reranking for considerably more in the synthesiser.
+_OLLAMA_VRAM_RESERVE = 2.2e9
+
+
+def _pick_device() -> str:
+    """The GPU if there is one with room, else the CPU path that shipped.
+
+    This card sat completely idle while the reranker fought the embedder
+    and Ollama for scarce system memory, which was the whole problem.
+    Measured here, same 20 pairs: 0.28 s on the GPU against roughly 29 s
+    of load-score-unload churn on the CPU, and in fp16 the weights take
+    1.14 GB of VRAM while system memory actually goes *up*, because
+    nothing large stays resident on the host side.
+
+    A card too small to hold the weights is left alone rather than
+    half-used: Ollama needs about 2.16 GB of the same 4 GB for
+    GENERATOR_MODEL, so this claims the GPU only when both still fit.
+
+    The test is against the card's *total* memory, deliberately, not
+    what happens to be free right now. Free VRAM swings by more than
+    2 GB depending on whether Ollama is holding GENERATOR_MODEL at this
+    instant, and rerank.apply() may have just evicted it, so choosing on
+    the live figure would put the reranker on the GPU or the CPU
+    according to timing rather than according to the hardware. A real
+    out-of-memory on the load is caught by the caller, which falls back.
+    """
+    try:
+        import torch
+        if not torch.cuda.is_available():
+            return "cpu"
+        total_bytes = torch.cuda.get_device_properties(0).total_memory
+        # 1.2 GB for these weights, 1.9 GB for GENERATOR_MODEL's own
+        # weights, 0.85 GB for the display. Measured on this 4.29 GB
+        # card: the reranker leaves 2.05 GB and Ollama wants 2.16 GB at
+        # 4096 context, so its KV cache spills about 0.1 GB to the host.
+        # That is a deliberate trade and not an oversight: a fraction of
+        # a second on the generation call against the 28 seconds of
+        # load-score-unload the CPU path costs on every single question.
+        needed = 1.2e9 + 1.9e9 + 0.85e9
+        return "cuda" if total_bytes > needed else "cpu"
+    except Exception:
+        return "cpu"
+
 
 def _load() -> tuple:
+    import torch
     from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
     tokenizer = load_with_retry(
         lambda: AutoTokenizer.from_pretrained(RERANK_MODEL),
         "reranker tokenizer",
     )
+
+    device = _pick_device()
+    if device == "cuda":
+        # device_map streams the shards straight into VRAM instead of
+        # materialising the whole model in system RAM first, which is
+        # what segfaulted here when host memory was down to ~2 GB.
+        try:
+            model = AutoModelForSequenceClassification.from_pretrained(
+                RERANK_MODEL, torch_dtype=torch.float16, device_map={"": 0},
+            )
+            model.eval()
+            return tokenizer, model, device
+        except Exception as error:  # noqa: BLE001
+            # Not retried on the GPU: if the card is genuinely full,
+            # asking again changes nothing, and the CPU path below is a
+            # working answer rather than a failed question. Said out
+            # loud on stderr because a silent demotion here looks like
+            # an unexplained thirty seconds later on.
+            print(f"  reranker could not take the GPU ({error}); "
+                  f"falling back to CPU", file=sys.stderr, flush=True)
+            device = "cpu"
     # low_cpu_mem_usage=True: the default loading path builds a full
     # random-weight model first, then overlays the checkpoint on top,
     # transiently needing roughly twice the model's final memory before
@@ -65,10 +134,11 @@ def _load() -> tuple:
         "reranker model weights",
     )
     model.eval()
-    return tokenizer, model
+    return tokenizer, model, device
 
 
-def _score(tokenizer, model, query: str, texts: list[str], max_length: int) -> list[float]:
+def _score(tokenizer, model, device: str, query: str, texts: list[str],
+           max_length: int) -> list[float]:
     import torch
 
     pairs = [(query, text) for text in texts]
@@ -77,17 +147,25 @@ def _score(tokenizer, model, query: str, texts: list[str], max_length: int) -> l
             pairs, padding=True, truncation=True,
             return_tensors="pt", max_length=max_length,
         )
+        if device == "cuda":
+            inputs = inputs.to("cuda")
+        # .float() before sigmoid matters on the GPU path: the logits come
+        # back in fp16 there, and the scores are compared against each
+        # other and rounded into a trace, so they are widened first.
         logits = model(**inputs).logits.view(-1).float()
         scores = torch.sigmoid(logits)
     return scores.tolist()
 
 
 def main() -> None:
-    tokenizer, model = _load()
+    tokenizer, model, device = _load()
     # The parent blocks on this exact line before sending its first
     # request, so the model is fully loaded before anything is asked of
-    # it; see rerank.py's own _ensure_worker.
-    print(json.dumps({"ready": True}), flush=True)
+    # it; see rerank.py's own _ensure_worker. The device travels with the
+    # ready line because it decides something the parent cannot see for
+    # itself: a worker holding its weights in VRAM is not competing for
+    # host memory, so rerank.apply() can leave it resident.
+    print(json.dumps({"ready": True, "device": device}), flush=True)
 
     for line in sys.stdin:
         line = line.strip()
@@ -96,7 +174,7 @@ def main() -> None:
         try:
             request = json.loads(line)
             scores = _score(
-                tokenizer, model, request["query"], request["texts"],
+                tokenizer, model, device, request["query"], request["texts"],
                 request.get("max_length", 1024),
             )
             print(json.dumps({"scores": scores}), flush=True)

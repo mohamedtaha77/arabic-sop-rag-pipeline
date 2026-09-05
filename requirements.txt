@@ -41,3 +41,19 @@ qdrant-client==1.19.0
 # present as a transitive dependency of accelerate; declared directly here
 # because this project imports it by name, not just benefits from it.
 psutil==7.2.2
+
+# Stage 10's four required metrics were first built on ragas 0.4.3, tried
+# and measured, not assumed: its own claim-decomposition step (Faithfulness
+# and FactualCorrectness both first break an answer into a strict, typed
+# JSON array of atomic statements before scoring anything) is a harder
+# structured-output task than either of this project's own two existing 3B
+# local-judge calls, crag.py's flat {"verdict","reason"} and entail.py's
+# flat {"entailed": bool}, ever asks of the model. Run for real, ragas's own
+# calibration probe alone took over an hour and produced constant output-
+# parsing failures with cascading retries; the real judging phase that
+# follows it never scored a single question in that time. ragas_judge.py's
+# own module docstring has the full account. Replaced with a direct,
+# single-call, flat-JSON rubric through client.py, the same proven shape
+# crag.py and entail.py already use successfully with this exact model, so
+# ragas, openai, langchain and their own transitive tree are no longer a
+# dependency of this project at all.

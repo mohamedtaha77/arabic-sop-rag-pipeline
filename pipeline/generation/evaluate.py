@@ -42,17 +42,10 @@ stage 8's own evaluate.py files hold hybrid retrieval and Reranking to.
 from __future__ import annotations
 
 import json
-import urllib.request
 
-from ..config import (
-    GENERATION_DECISION,
-    GENERATION_OUTPUT,
-    GENERATOR_MODEL,
-    GOLDEN_SET,
-    JUDGE_MODEL,
-    LLM_BASE_URL,
-)
+from ..config import GENERATION_DECISION, GENERATION_OUTPUT, GOLDEN_SET
 from ..golden.question import load_golden
+from ..llm import client
 from ..llm.ledger import Ledger
 from ..retrieval.retriever import ShippingHandle, open_shipping
 from ..techniques import rerank
@@ -85,40 +78,22 @@ _CRAG_THRESHOLD_MARGIN = 0.01
 
 
 def _reset_ollama() -> None:
-    """Force-unload whichever model Ollama is currently serving.
+    """Force-unload GENERATOR_MODEL and JUDGE_MODEL, added after this
+    file's own full run crashed three times in a row at different points,
+    one a raw segfault with no output at all, one a genuine `cudaMalloc
+    failed: out of memory` from inside Ollama's own llama-server process
+    partway through the CRAG threshold measurement's own eight sequential
+    questions.
 
-    Added after this file's own full run crashed three times in a row
-    at different points, one a raw segfault with no output at all, one
-    a genuine `cudaMalloc failed: out of memory` from inside Ollama's
-    own llama-server process partway through the CRAG threshold
-    measurement's own eight sequential questions. LEARNING/router.md
-    already documents this machine's own established mitigation for a
-    crash under sustained model-loading load, stop the resident model
-    and retry as a fresh process; a full Python process restart is not
-    available mid-function, so this calls the same unload Ollama's own
-    API exposes (`keep_alive: 0`) directly, giving the server a clean
-    slate between this file's own heaviest phases rather than letting
-    state accumulate across dozens of sequential calls in one run.
-    Best-effort: a failed reset is not this function's problem to raise
-    on, since the worst case is simply that the next call pays a full
-    reload instead of reusing a warm model, not a correctness issue.
+    Promoted to client.unload_models once stage 10's own harness needed
+    the identical reset between its three arms; see that function's own
+    docstring for the measured reason and the mechanism. Kept here, one
+    line, rather than replacing every call site below with the qualified
+    name, since this file's own two call sites already read cleanly as
+    "reset Ollama" and gain nothing from spelling out where that now
+    lives.
     """
-    # LLM_BASE_URL is the OpenAI-compatible path, ".../v1"; Ollama's own
-    # native unload endpoint sits at the root, ".../api/generate", not
-    # under "/v1" at all, so the "/v1" suffix is stripped rather than
-    # navigated past with a literal ".." segment, which an HTTP request
-    # does not resolve the way a filesystem path would.
-    root_url = LLM_BASE_URL.removesuffix("/v1")
-    for model in (GENERATOR_MODEL, JUDGE_MODEL):
-        try:
-            request = urllib.request.Request(
-                f"{root_url}/api/generate",
-                data=json.dumps({"model": model, "keep_alive": 0}).encode("utf-8"),
-                headers={"Content-Type": "application/json"}, method="POST",
-            )
-            urllib.request.urlopen(request, timeout=30).read()
-        except Exception:  # noqa: BLE001
-            pass
+    client.unload_models()
 
 
 def measure_crag_threshold(handle: ShippingHandle) -> dict:

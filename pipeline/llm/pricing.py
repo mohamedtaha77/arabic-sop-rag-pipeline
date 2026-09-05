@@ -45,6 +45,16 @@ RATE_CARDS = {
     "haiku-4.5": RateCard("Claude Haiku 4.5", 1.00, 5.00),
     "sonnet-5": RateCard("Claude Sonnet 5", 2.00, 10.00),
     "opus-5": RateCard("Claude Opus 5", 5.00, 25.00),
+    # Groq's own published on-demand rate for openai/gpt-oss-120b, read
+    # 2026-09-05. This one is not notional the way the three above are:
+    # the Groq copy really can run past its free tier, so this is what a
+    # heavy session would actually be billed. allam-2-7b (the judge model
+    # on that copy) has no verifiable published per-token rate as of the
+    # same date, so it is priced at $0 here rather than guessed; this
+    # card understates a real Groq bill by whatever the judge calls cost,
+    # typically a small fraction of the total given its own short
+    # entailment prompts.
+    "groq": RateCard("Groq (gpt-oss-120b)", 0.15, 0.60),
 }
 
 # The small-model tier, chosen as the default because it is the honest

@@ -87,9 +87,15 @@ an empty list; stop there. Otherwise, decide route:
 
 route: one of "simple", "basic_rag", "advanced_rag".
   simple        in_scope, but general enough to answer without looking \
-anything up in the manuals: a definition, a term, something the manuals' \
-own subject matter touches on generally rather than documents as one of \
-their own specific procedures.
+anything up in the manuals: an abbreviation or term the manuals' own \
+subject matter touches on only in passing, never applying it as one of \
+their own named procedures. The moment the question asks how these \
+manuals themselves apply that term (FIFO issuance in warehouse storage, \
+BPM in mail routing, both named above as this pipeline's own manuals' \
+subject matter), it is basic_rag, not simple, even though the same term \
+also has a well-known general meaning outside these manuals. A term's \
+having an ordinary dictionary meaning never by itself makes a question \
+about that term simple.
   basic_rag     the default for an in_scope question that asks for one \
 fact, one number, one procedure, or one definition specific to these \
 manuals, stated plainly and standing on its own. Most in_scope questions \

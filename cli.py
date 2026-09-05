@@ -14,12 +14,32 @@
     python cli.py route         one question through the pre-gate and router
     python cli.py techniques    one question through the full pipeline, or the reports
     python cli.py ask           two-stage generation: one question end to end, or the reports
+    python cli.py evaluate      stage 10: three arms, the ragas judge, and REPORT.md
+    python cli.py serve         the local web assistant: chat, cited pages, live cost
 """
 
 from __future__ import annotations
 
 import argparse
+import os
 import sys
+
+# Read a --provider value out of argv before pipeline.config is ever
+# imported below: config.py reads LLM_PROVIDER as a module-level constant
+# at import time and freezes GENERATOR_MODEL, JUDGE_MODEL, LLM_BASE_URL and
+# GROQ_API_KEYS from it right there. That import happens on the very next
+# line, well before argparse gets to parse "serve --provider groq" further
+# down in main(). Setting the environment variable inside the serve branch
+# itself is too late: pipeline.config would already be cached in
+# sys.modules with the local defaults baked in, and no later os.environ
+# write would reach it. Handles both "--provider groq" and
+# "--provider=groq"; anything else (or no flag at all) leaves LLM_PROVIDER
+# unset and config.py's own default ("local") applies.
+for _i, _arg in enumerate(sys.argv):
+    if _arg.startswith("--provider="):
+        os.environ["LLM_PROVIDER"] = _arg.split("=", 1)[1]
+    elif _arg == "--provider" and _i + 1 < len(sys.argv):
+        os.environ["LLM_PROVIDER"] = sys.argv[_i + 1]
 
 from pipeline.config import CONTEXT_VARIANTS, RENDER_DPI
 
@@ -208,6 +228,30 @@ def main(argv: list[str] | None = None) -> int:
              "generate, guard, and print the presented answer",
     )
 
+    sub.add_parser(
+        "evaluate",
+        help="stage 10: the three-arm harness, the ragas judge, and REPORT.md",
+    )
+
+    serve_parser = sub.add_parser(
+        "serve",
+        help="run the local web assistant: chat, cited source pages, live cost",
+    )
+    serve_parser.add_argument(
+        "--host", default="127.0.0.1",
+        help="bind address, default 127.0.0.1 (localhost only, deliberately: "
+             "the corpus is internal-use material and this server has no auth)",
+    )
+    serve_parser.add_argument("--port", type=int, default=8000, help="port, default 8000")
+    serve_parser.add_argument(
+        "--provider", choices=("local", "groq"), default="local",
+        help="local (default): everything on this machine, unchanged. "
+             "groq: same pipeline, GENERATOR_MODEL and JUDGE_MODEL calls go "
+             "to Groq's API instead of Ollama (see config.py's own note on "
+             "why this is opt-in and needs .env). Retrieval, reranking and "
+             "the embedder stay local either way.",
+    )
+
     args = parser.parse_args(argv)
 
     if args.command == "textlayer":
@@ -362,14 +406,19 @@ def main(argv: list[str] | None = None) -> int:
             from pipeline.config import PROCESSED_DIR
             from pipeline.llm.ledger import Ledger
             from pipeline.retrieval.retriever import open_shipping
-            from pipeline.techniques import rerank
             from pipeline.generation.run import answer
 
-            # warm_up() before open_shipping(): the same load-bearing
-            # order techniques' own cli-techniques branch already
-            # follows, since a single ad-hoc question is not known to
-            # need Reranking until the router runs inside answer().
-            rerank.warm_up()
+            # No rerank.warm_up() here, deliberately, and this is a
+            # change from the order the comment used to describe. That
+            # pre-warm predates stage 10's mutual-exclusion fix: it
+            # spawns the ~2.2 GB reranker without freeing anything
+            # first, which on this machine now dies with exit 3221225477
+            # five retries running whenever Ollama still holds a model
+            # resident (measured: qwen2.5:3b at 2.16 GB, 2.46 GB free).
+            # rerank.apply() already unloads Ollama and shuts the
+            # embedder down before it spawns the worker, so it succeeds
+            # unaided where the bare pre-warm cannot. Same reason
+            # serve/app.py and evaluation/harness.py both dropped it.
             with open_shipping() as handle:
                 result = answer(args.question, Ledger(label="cli-ask"), handle)
 
@@ -412,6 +461,25 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         ask_parser.print_help()
         return 1
+
+    if args.command == "evaluate":
+        from pipeline.evaluation import evaluate as evaluation_evaluate
+        return 0 if evaluation_evaluate.run() else 1
+
+    if args.command == "serve":
+        import uvicorn
+        # LLM_PROVIDER is already set from argv by this file's own top,
+        # before pipeline.config was first imported; args.provider here is
+        # only for the status line below, not for setting anything.
+        # One worker, always: pipeline/serve/app.py's own docstring has
+        # the two measured reasons (Qdrant's local file mode holds an
+        # exclusive lock, and this machine cannot run two generations at
+        # once). uvicorn defaults to one, and this never passes more.
+        print(f"http://{args.host}:{args.port}  (Ctrl+C to stop)  "
+              f"[provider: {args.provider}]")
+        uvicorn.run("pipeline.serve.app:app", host=args.host, port=args.port,
+                    log_level="warning")
+        return 0
 
     from pipeline.ingestion import compare
     compare.run()

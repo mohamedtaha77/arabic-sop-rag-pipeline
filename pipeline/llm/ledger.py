@@ -61,6 +61,7 @@ STEPS = (
     "Grounding guard",
     "Presenter",
     "Contextualisation",
+    "Evaluation judge",
 )
 
 SPEC_STEPS = frozenset({
@@ -100,6 +101,17 @@ LOCAL_STEPS = frozenset({"Reranking"})
 # only ever does build work is not held to the "a question was answered" rule
 # below, which is the rule for query-time ledgers, not index-time ones.
 BUILD_STEPS = frozenset({"Contextualisation"})
+
+# Steps that grade an answer rather than produce one. Stage 10's own judge
+# calls (ragas, against JUDGE_MODEL) run on a Ledger of their own, separate
+# from whatever Ledger answered the question, exactly so a judge's own cost
+# never lands in the number section 7 and section 14 both mean by "what this
+# question cost": what answering it spent, not what grading it afterwards
+# spent. A judge-only Ledger never carries "Final generation" for the same
+# reason a build-only one never does, so verify() reads this set alongside
+# BUILD_STEPS rather than being held to a rule written for a ledger that
+# answered something.
+JUDGE_STEPS = frozenset({"Evaluation judge"})
 
 
 @dataclass
@@ -228,6 +240,38 @@ class Ledger:
                 f"reporting the tokens and latency the original call measured.")
         return "\n".join(lines) + "\n" + note
 
+    def render_spec(self) -> str:
+        """Section 7's own table, exactly: five columns, in the task's own
+        order (Step, Input Tokens, Output Tokens, Cost, Executed?), and
+        only the seven rows the task names plus TOTAL, "Final Gemini
+        generation" already renamed "Final generation" the same way
+        SPEC_STEPS itself was named, since this pipeline's own model is
+        never Gemini.
+
+        TOTAL here still sums every entry on this ledger, not only the
+        seven SPEC_STEPS rows: section 7's own instruction is "report the
+        actual executed path and its accumulated cost", and a question
+        whose real path also ran Reranking, Self-Query or the presenter
+        would have TOTAL understate what answering it actually spent if
+        this summed only the rows this narrower table happens to name.
+        render() above is where those other rows are visible by name; this
+        table's own TOTAL still has to be the true total.
+        """
+        lines = [
+            "| Step | Input Tokens | Output Tokens | Cost | Executed? |",
+            "|---|---|---|---|---|",
+        ]
+        for row in self.rows():
+            if row["step"] not in SPEC_STEPS and row["step"] != "TOTAL":
+                continue
+            lines.append(
+                "| {step} | {prompt_tokens} | {completion_tokens} | "
+                "{cost_usd:.6f} | {executed} |".format(
+                    **{**row, "executed": "Yes" if row["executed"] else "No"}
+                )
+            )
+        return "\n".join(lines) + "\n"
+
     def verify(self) -> list[str]:
         """Check what the table has to be true for. Empty when clean."""
         failures = []
@@ -236,10 +280,14 @@ class Ledger:
         # describes a question that was never answered, and a cost table for an
         # answer that does not exist is not a cheap run, it is a bug.
         #
-        # Exempted when every entry is a build step: stage 4's ledger builds an
-        # index and answers no question, so holding it to a rule written for
-        # query-time ledgers would fail a run that never went wrong.
-        query_time = any(e.step not in BUILD_STEPS for e in self.entries)
+        # Exempted when every entry is a build step or a judge step: stage
+        # 4's ledger builds an index and answers no question, and stage
+        # 10's own judge ledgers grade an answer that already exists on a
+        # different ledger, so holding either to a rule written for
+        # query-time, answer-producing ledgers would fail a run that never
+        # went wrong.
+        exempt_steps = BUILD_STEPS | JUDGE_STEPS
+        query_time = any(e.step not in exempt_steps for e in self.entries)
         if query_time and not any(e.step == "Final generation" for e in self.entries):
             failures.append("Final generation never ran")
 

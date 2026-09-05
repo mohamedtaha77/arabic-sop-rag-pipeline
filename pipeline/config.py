@@ -77,7 +77,51 @@ LLM_CACHE_DIR = DATA_DIR / "llm_cache"
 # Ollama's OpenAI-compatible endpoint, kept as a base URL rather than a full
 # path. llama.cpp's server speaks the same dialect, so the documented fallback
 # is a one-line change here rather than a rewrite of the client.
-LLM_BASE_URL = "http://localhost:11434/v1"
+#
+# 127.0.0.1, never "localhost", and this is worth about two seconds on every
+# single LLM call. Measured on this machine, same model resident on the GPU,
+# same prompt: via "localhost" a short call took 2.34 s wall while Ollama's own
+# accounting reported 0.13 s of actual work; via 127.0.0.1 the same call takes
+# 0.06 s. Windows resolves "localhost" to IPv6 ::1 first, Ollama listens on
+# IPv4, and the stalled attempt has to fail before the fallback succeeds. At
+# six calls for one advanced_rag question that alone was around 13 seconds of
+# doing nothing.
+LLM_BASE_URL = "http://127.0.0.1:11434/v1"
+
+# Whether to tear every model down between steps.
+#
+# When True, techniques.rerank.apply() shuts the embedder worker down, evicts
+# Ollama's resident model and kills its own worker after scoring, so only one
+# heavy model is ever in memory at once. That is what stops this machine
+# segfaulting, and it is also the single largest cost in the pipeline:
+# reranking measured 29.0 s wall for a question whose LLM calls were all served
+# from cache, nearly all of it reloading models that were just discarded (a
+# cold Ollama reload alone measured 7.6 s).
+#
+# When False, everything stays resident and reranking drops to roughly the
+# 1-2 s the scoring itself takes. That is only safe with real memory to spare:
+# BGE-M3 and the reranker want about 2.2 GB each, and loading either with under
+# ~2 GB free has segfaulted here repeatedly and reproducibly.
+#
+# So the default is measured rather than assumed, and re-measured on every run
+# because what else is open on a laptop changes hour to hour. Override with
+# GBG_LOW_MEMORY=0 (stay resident) or =1 (always tear down) when you want to
+# decide for yourself.
+LOW_MEMORY_HEADROOM_GB = 6.0
+
+def _detect_low_memory() -> bool:
+    forced = os.environ.get("GBG_LOW_MEMORY")
+    if forced is not None:
+        return forced.strip() not in {"0", "false", "False", ""}
+    try:
+        import psutil
+        return psutil.virtual_memory().available / 1e9 < LOW_MEMORY_HEADROOM_GB
+    except Exception:
+        # Never let a memory probe decide the pipeline cannot run: the
+        # conservative answer is the one that has always worked here.
+        return True
+
+LOW_MEMORY_MODE = _detect_low_memory()
 
 # Seconds. Generous on purpose: a 4 GB card holds only part of even a 3B model,
 # so the remaining layers run on CPU and a long-context generation is measured
@@ -94,6 +138,70 @@ LLM_TIMEOUT = 300
 # a decision for the probe's numbers, not for this file.
 GENERATOR_MODEL = "qwen2.5:3b-instruct-q4_K_M"
 JUDGE_MODEL = "llama3.2:3b-instruct-q4_K_M"
+
+# --- optional cloud provider (Groq), off unless explicitly asked for -------
+#
+# A same-day A/B experiment against the local models above, not a
+# replacement: this pipeline's whole premise is running entirely local, and
+# every other constant in this file stays exactly as it was. This override
+# exists only because this particular corpus was confirmed non-sensitive and
+# the point is to compare a frontier model against the 3B local ones on the
+# same retrieval pipeline. Set LLM_PROVIDER=groq (cli.py serve --provider
+# groq does this) to turn it on; anything else, including leaving it unset,
+# leaves every line above untouched.
+#
+# Keys and model names load from .env (never hardcoded, never committed;
+# .env already matches .gitignore) via python-dotenv, already an installed
+# dependency though unused until now. Up to 4 keys because Groq's free tier
+# rate-limits per key; client.py rotates to the next configured key on a 429
+# rather than the whole pipeline stopping mid-question.
+from dotenv import load_dotenv  # noqa: E402
+load_dotenv(PROJECT_ROOT / ".env")
+
+LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "local")
+
+# Populated only when LLM_PROVIDER is actually "groq", deliberately not
+# just "whenever .env happens to have keys in it": .env is loaded
+# unconditionally above (simplest way to make GROQ_GENERATOR_MODEL etc.
+# available without a second load call), so leaving this keyed only on
+# presence would mean a local run with a filled-in .env silently attaches
+# a real Groq bearer token to every request sent to Ollama. Harmless in
+# practice, since Ollama's endpoint does not check auth and ignores the
+# header, but there is no reason for a key to leave this file's scope on
+# a path that was never asked to use it.
+GROQ_API_KEYS: list[str] = []
+
+if LLM_PROVIDER == "groq":
+    GROQ_API_KEYS = [
+        key for key in (
+            os.environ.get("GROQ_API_KEY_1", ""),
+            os.environ.get("GROQ_API_KEY_2", ""),
+            os.environ.get("GROQ_API_KEY_3", ""),
+            os.environ.get("GROQ_API_KEY_4", ""),
+        ) if key
+    ]
+    if not GROQ_API_KEYS:
+        raise RuntimeError(
+            "LLM_PROVIDER=groq but no GROQ_API_KEY_1..4 is set in .env. "
+            "Copy .env.example to .env and fill in at least one key from "
+            "console.groq.com."
+        )
+    LLM_BASE_URL = "https://api.groq.com/openai/v1"
+    # Checked live against this account's own /v1/models on 2026-09-05
+    # (llama-3.3-70b-versatile and gemma2-9b-it, the first choice, had
+    # both been retired by then). Two things ruled out qwen/qwen3.6-27b
+    # as the judge despite otherwise fitting the "different family"
+    # principle: measured directly, it prints its own chain of thought
+    # as literal <think>...</think> text inside the answer content
+    # itself, 201 completion tokens to say "pong", rather than keeping
+    # it out of the field every JSON parser in this pipeline reads.
+    # allam-2-7b (SDAIA/IBM, Arabic-specialised, a different family from
+    # gpt-oss either way) came back clean, "pong" and nothing else, 4
+    # tokens. Its own context is a comparatively tight 4096 tokens;
+    # workable for entail.py's short premise+hypothesis pairs, not
+    # verified for every possible chunk length in this corpus.
+    GENERATOR_MODEL = os.environ.get("GROQ_GENERATOR_MODEL", "openai/gpt-oss-120b")
+    JUDGE_MODEL = os.environ.get("GROQ_JUDGE_MODEL", "allam-2-7b")
 
 # Tokens of context this pipeline needs, and what probe.py verifies the server
 # actually provides rather than trusting.
@@ -349,9 +457,70 @@ DIRECT_MAX_TOKENS = 300
 # rather than something silently absorbed.
 NLI_MODEL = "MoritzLaurer/mDeBERTa-v3-base-xnli-multilingual-nli-2mil7"
 
+# Which entail.py backend the grounding guard uses, overriding the winner
+# stored in 07_generation_decision.json. None means defer to that file
+# (currently "llm").
+#
+# Tried switching this to "nli" to cut latency: the guard is the only step
+# using JUDGE_MODEL while everything else uses GENERATOR_MODEL, and on a
+# 4 GB card two 3B models forces an Ollama swap each way, measured at
+# roughly 14 s of an 18 s answer. In isolation nli genuinely was faster
+# (0.20-0.25 s warm against 8+ s). Reverted anyway: with the embedder
+# worker and the reranker's own worker already contending for this
+# machine's memory, adding the NLI worker as a third simultaneous torch
+# process pushed Windows commit charge over its limit and caused new
+# failures, including one where Ollama's own llama-server was killed as
+# collateral. Three of six fresh questions failed outright with the nli
+# backend active; that regression is worse than the 14 s it would have
+# saved. Left as a documented option, not a live one, until this runs
+# somewhere with real memory headroom to confirm it is actually safe.
+GUARD_BACKEND: str | None = None
+
 # What stage 9 decided: which entailment backend shipped, the CRAG threshold
 # it measured, and the presenter's own block rate, read back the same way
 # TECHNIQUE_DECISION is by stage 10, rather than a constant edited by hand
 # after reading a table.
 GENERATION_OUTPUT = PROCESSED_DIR / "07_generation.md"
 GENERATION_DECISION = PROCESSED_DIR / "07_generation_decision.json"
+
+
+# --- stage 10: evaluation and the report --------------------------------------
+
+# One question answered by one of evaluation.record.ARMS, flattened and
+# written once, read back by every file after harness.py rather than
+# re-running local generation to re-render a table. RETRIEVAL_DECISION and
+# TECHNIQUE_DECISION are read back the same way by the stages that consume
+# them; this is that same discipline applied to a whole batch of answers
+# instead of one number.
+RUNS_OUTPUT = PROCESSED_DIR / "20_runs.json"
+
+# ragas's own four scores per (arm, question), on a ledger separate from the
+# one any run in RUNS_OUTPUT spent answering: a judge call is a real cost,
+# but not the cost section 7 and section 14 both ask for, which is what
+# answering the question spent, not what grading it afterwards spent.
+JUDGE_OUTPUT = PROCESSED_DIR / "21_judge.json"
+
+# The committed deliverable, at the repo root rather than under data/, since
+# data/processed/ is gitignored on purpose (the corpus is Housing Bank
+# material marked for internal use) and a report that only ever existed
+# gitignored would never reach the repo this task is graded from.
+REPORT_OUTPUT = PROJECT_ROOT / "REPORT.md"
+
+# How many of the retrieved contexts a ragas judge call actually sees per
+# question, capped independently of RETRIEVAL_K and RERANK_TOP_N. The
+# adaptive and forced arms can hand generation up to RERANK_TOP_N (20)
+# reranked chunks; a Context Relevance or Faithfulness prompt built from all
+# 20 plus the question and the rubric risks exactly the silent overflow
+# CHARS_PER_TOKEN's own comment already measured once, a prompt cut in half
+# with no warning. Judging is scored against what was actually retrieved, so
+# this caps the judge's own view rather than the generator's: raising it
+# only costs judge tokens, never changes what an answer was grounded in.
+JUDGE_TOP_K = 10
+
+# The completion budget for one ragas metric call. A judge call's own
+# output is a short structured extraction (a list of decomposed claims
+# plus a verdict per claim, or a single score), never a full answer, so
+# this sits well under SYNTHESIS_MAX_TOKENS on purpose: a reasoned
+# starting point in the same spirit as MULTIQUERY_N and DECOMPOSE_MAX,
+# not a number fit to this golden set.
+JUDGE_LLM_MAX_TOKENS = 1024

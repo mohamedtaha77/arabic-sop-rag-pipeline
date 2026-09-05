@@ -65,6 +65,12 @@ _MAX_LENGTH = 1024
 
 _worker: subprocess.Popen | None = None
 
+# Where the live worker put its weights, as reported on its own ready
+# line. "cuda" means it is not competing for host memory at all, which is
+# what lets apply() below leave it resident between questions instead of
+# paying the load again every time.
+_worker_device: str = "cpu"
+
 # A crashed worker startup on this development machine is not always
 # reproducible from the same starting conditions, the identical pattern
 # embedding/run.py's own _SUBPROCESS_RETRIES already documents and
@@ -107,6 +113,11 @@ def _ensure_worker() -> subprocess.Popen:
         elapsed = time.perf_counter() - started
         if ready_line and "ready" in ready_line:
             _worker = candidate
+            global _worker_device
+            try:
+                _worker_device = json.loads(ready_line).get("device", "cpu")
+            except json.JSONDecodeError:
+                _worker_device = "cpu"
             atexit.register(_terminate_worker)
             return _worker
 
@@ -214,7 +225,50 @@ def apply(
 ) -> tuple[list[ScoredChunk], RerankTrace]:
     """Re-score every candidate against the query with the cross-encoder,
     and return the top RETRIEVAL_K under the new order.
+
+    embed_client.shutdown() and client.unload_models() both run first,
+    always, even when this call ends up not needing a worker at all (an
+    empty scored list). embed_client.shutdown() exists because two
+    already-healthy, already-isolated worker processes (this one and
+    _embed_worker.py's own) still segfaulted the moment either needed
+    real activation memory on top of both workers' own resident weights,
+    at 1.95 GB free measured right before it happened; see its own
+    docstring for the full account. client.unload_models() was added
+    after that fix alone still left the reranker worker itself failing
+    to start, measured directly: by the time Reranking runs, a
+    query-transformation technique or the router's own call has often
+    just left Ollama holding GENERATOR_MODEL resident, a third heavy
+    consumer of the same tight memory neither worker's own isolation
+    does anything about. Freeing it here costs the next Ollama call a
+    cold reload, the same accepted trade router.md's own established
+    mitigation already makes elsewhere in this project.
+    _terminate_worker() at the end gives the reranker's own memory back
+    once scoring is done, rather than leaving this worker resident for a
+    call that, per this file's own docstring, may not happen again
+    before the question's own answer is finished.
     """
+    from ..config import LOW_MEMORY_MODE
+    from ..llm import client
+    from ..retrieval import embed_client
+
+    # All of the above is what LOW_MEMORY_MODE buys, and it is bought at a
+    # steep price: every teardown here is a reload somewhere else. With room
+    # to keep the three models resident the whole dance is unnecessary, and
+    # skipping it is what takes reranking from 29.0 s to the 1-2 s the
+    # scoring itself costs. config.LOW_MEMORY_MODE decides by measuring
+    # free memory at import, so this stays safe on the machine the crash
+    # notes above were written on and stops paying for it on one with
+    # headroom. See config.py for the threshold and the override.
+    if LOW_MEMORY_MODE:
+        embed_client.shutdown()
+        client.unload_models()
+
+    # The embedder is still shut down above even when the reranker is on
+    # the GPU, and on purpose: BGE-M3 holds its weights in host memory
+    # either way, so that teardown is still buying the headroom this
+    # machine needs. What the GPU changes is only the reranker's own
+    # residency, handled after scoring.
+
     if not scored:
         return scored, RerankTrace(query=query_text, before=(), after=(), scores={})
 
@@ -222,7 +276,26 @@ def apply(
     texts = [item.chunk.text for item in scored]
 
     started = time.perf_counter()
-    raw_scores = _score_pairs(query_text, texts)
+    try:
+        raw_scores = _score_pairs(query_text, texts)
+    finally:
+        # Torn down even on the GPU path, and that is a reversal worth
+        # explaining. "On the GPU" describes only where the weights sit:
+        # the process still holds a Python interpreter, torch and a CUDA
+        # context, and a CUDA context reserves a large amount of Windows
+        # commit charge. Leaving it resident alongside the embedder and
+        # the NLI worker put three torch processes against a commit limit
+        # already 80% used, and the third one died on import with
+        # WinError 1455, "the paging file is too small". Measured: three
+        # of six questions failed that way.
+        #
+        # So residency is given up and the load is paid again per call.
+        # It is a much cheaper load than it used to be, which is what
+        # makes this affordable: 6.6 s on the GPU against roughly 29 s of
+        # load-score-unload on the CPU. Fast and reliable beats fastest
+        # and broken.
+        if LOW_MEMORY_MODE:
+            _terminate_worker()
     latency = time.perf_counter() - started
     ledger.record_local("Reranking", latency, model=RERANK_MODEL)
 

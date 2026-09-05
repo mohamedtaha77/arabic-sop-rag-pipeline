@@ -9,6 +9,7 @@ data/embeddings/
 data/embeddings_sparse/
 data/qdrant/
 data/qdrant_browser.html
+data/page_cache/
 
 # Private working notes, not part of the published project.
 LEARNING/

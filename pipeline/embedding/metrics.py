@@ -41,6 +41,14 @@ from ..config import PREFERRED_MODEL, RETRIEVAL_K
 # MRR@k uses the first gold chunk found, and nDCG@k gives partial credit for
 # rank order among several gold chunks, binary relevance since nothing in
 # this golden set grades one gold chunk as more central than another.
+#
+# Precision@k, added for stage 10 (advanced-rag-plan.md names it alongside
+# Recall, MRR and nDCG as a required retrieval metric, and no earlier stage
+# needed it: 6 and 7's own grids settled their decisions on Recall@10 and
+# MRR@10 alone), divides by however many chunks actually came back rather
+# than by k unconditionally: a question whose retriever only ever returns 3
+# chunks should not be capped at 0.3 precision for a reason that has
+# nothing to do with what those 3 chunks were.
 
 
 def recall_at_k(ranked_ids: list[str], gold_ids: set[str], k: int) -> float:
@@ -48,6 +56,13 @@ def recall_at_k(ranked_ids: list[str], gold_ids: set[str], k: int) -> float:
         return 0.0
     top = set(ranked_ids[:k])
     return len(top & gold_ids) / len(gold_ids)
+
+
+def precision_at_k(ranked_ids: list[str], gold_ids: set[str], k: int) -> float:
+    top = ranked_ids[:k]
+    if not top:
+        return 0.0
+    return len(set(top) & gold_ids) / len(top)
 
 
 def strict_recall_at_k(ranked_ids: list[str], gold_ids: set[str], k: int) -> float:

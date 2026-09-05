@@ -249,6 +249,7 @@ def answer(
     history: list[tuple[str, str]] | None = None,
     technique_set: TechniqueSet | None = None,
     crag_threshold: float | None = None,
+    route_override: str | None = None,
 ) -> QuestionRun:
     """Route, retrieve, and apply whichever techniques the route calls
     for, once, for one question.
@@ -265,6 +266,24 @@ def answer(
     below, which checks that a forced TechniqueSet.none() reproduces the
     shipping ranking exactly with nothing else touching it.
 
+    route_override skips gate.check and router.route entirely and builds
+    a RouteDecision locally with route=route_override, requesting no
+    techniques of its own. Built for stage 10's own basic arm: the task's
+    own section 2 specifies Basic RAG as "Question -> Embedding -> Vector
+    Search -> Top-K Chunks -> Prompt -> LLM -> Answer", a flow with no
+    routing step at all. Forcing TechniqueSet.none() through the ordinary
+    router would still let it refuse Q9 at the pre-gate or send Q10
+    wherever a real classification lands, handing the baseline two
+    behaviours the spec's own flow has no mechanism to produce; this is
+    the difference between "no techniques ran" and "no router ran",
+    and the basic arm needs the second. Composes with technique_set
+    rather than replacing it, since a caller forcing the route still
+    needs to say what runs on it: stage 10's own harness passes both,
+    route_override="basic_rag" and technique_set=TechniqueSet.none(),
+    together. RouteDecision's own __post_init__ validates route_override
+    against ROUTES, so this raises the same way an unrecognised route
+    from the model would, rather than duplicating that check here.
+
     crag_threshold defaults to None rather than to
     PROVISIONAL_CRAG_THRESHOLD directly, the same reason
     _reranking_default is called from inside _resolve_technique_set's own
@@ -278,16 +297,24 @@ def answer(
     """
     if crag_threshold is None:
         crag_threshold = _crag_threshold_default()
-    gate_decision = pre_gate_check(question)
-    if gate_decision is not None:
-        return QuestionRun(
-            question=question, history=history, gate_matched=True,
-            decision=gate_decision, technique_set=TechniqueSet.none(),
-            executed=(), retrieved=[], context_text="", traces={},
-            ledger=ledger,
-        )
 
-    decision = router_route(question, ledger, history=history)
+    if route_override is not None:
+        decision = RouteDecision(
+            route=route_override,
+            reason=f"route forced to {route_override!r} by the caller "
+                   f"(route_override), the router never ran",
+        )
+    else:
+        gate_decision = pre_gate_check(question)
+        if gate_decision is not None:
+            return QuestionRun(
+                question=question, history=history, gate_matched=True,
+                decision=gate_decision, technique_set=TechniqueSet.none(),
+                executed=(), retrieved=[], context_text="", traces={},
+                ledger=ledger,
+            )
+        decision = router_route(question, ledger, history=history)
+
     resolved = _resolve_technique_set(decision, technique_set)
     # Runtime triggers are themselves part of "what the route and the
     # router picked"; an explicit override switches them off along with
