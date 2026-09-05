@@ -182,7 +182,11 @@ rather than sequential across the corpus. Under a corpus-wide sequence, insertin
 one chunk renumbers everything after it and silently invalidates the gold ids the
 evaluation set names by hand.
 
-![A browser view of the corpus's 357 chunks, one row each, showing source manual, page, chunk type, character count and a text preview](docs/screenshots/chunk_browser.png)
+`python cli.py store --browse` opens a sortable, filterable local page over
+every chunk, with a detail panel for the full text on click. It never leaves
+this machine; nothing is uploaded anywhere.
+
+![An interactive, sortable browser over all 357 chunks, showing chunk id, source manual, page, chunk type, section path, actor and character count](docs/screenshots/chunk_browser.png)
 
 ## Setup
 
@@ -524,14 +528,15 @@ e5-large's 512-token cap silently truncates about 1% of the corpus, named by
 chunk id rather than smoothed into a percentage; BGE-M3's 8,192-token cap is
 never approached.
 
-BGE-M3's own dense vectors for all 357 chunks, 1,024 dimensions each,
-projected down to the two directions of greatest spread by PCA (computed
-directly with numpy's SVD, no separate library). The three manuals separate
-into three distinct, largely non-overlapping clusters before any question is
-ever asked of them, a real signal about embedding quality rather than an
-assumption resting on the golden set's own 18 questions alone. The first two
-components explain 27.3% of total variance, so this is a hint about the
-corpus's own structure, not the whole of it.
+BGE-M3's own dense vectors for all 357 chunks, projected down to the two
+directions of greatest spread by PCA, colour-coded by source manual. The
+three manuals separate into three distinct, largely non-overlapping
+clusters before any question is ever asked of them, a real signal about
+embedding quality rather than an assumption resting on the golden set's own
+18 questions alone. PC1 and PC2 explain 12.1% and 9.8% of total variance
+respectively, so this is a hint about the corpus's own structure, not the
+whole of it; the same projection can also colour by chunk type instead of
+source, which is the tool's own default view.
 
 ![A 2D PCA projection of all 357 chunk embeddings, colour-coded by source manual, showing three well-separated clusters](docs/screenshots/embedding_space.png)
 
